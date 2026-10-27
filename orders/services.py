@@ -100,10 +100,26 @@ class OrderService:
                     "Only pending orders can be cancelled"
                 )
 
+            has_active_payment = Payment.objects.filter(
+                order=order,
+                status=Payment.Status.PENDING,
+                checkout_status__in=[
+                    Payment.CheckoutStatus.CREATING,
+                    Payment.CheckoutStatus.READY,
+                ],
+            ).exists()
+
+            if has_active_payment:
+                raise OrderCannotBeCancelledError(
+                    "Order cannot be cancelled while payment is in progress"
+                )
+
             products_by_id = {}
 
             for item in order.items.all():
-                products_by_id[item.product_id] = item.quantity
+                products_by_id[item.product_id] = (
+                        products_by_id.get(item.product_id, 0) + item.quantity
+                )
 
             products = list(
                 Product.objects
