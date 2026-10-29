@@ -1,9 +1,12 @@
 from django.db import transaction
 from orders.models import Order, OrderItem
+from accounts.models import UserProfile
 from products.models import Product
+from payments.models import Payment
 from orders.exceptions import (
     OrderNotFoundError,
     OrderCannotBeCancelledError,
+    OrderCreationError
 )
 
 
@@ -19,13 +22,13 @@ class OrderService:
             product_quantity = item["quantity"]
 
             if type(product_id) is not int or product_id < 1:
-                raise ValueError("Product ID must be a positive integer")
+                raise OrderCreationError("Product ID must be a positive integer")
 
             if type(product_quantity) is not int or product_quantity < 1:
-                raise ValueError("Quantity must be a positive integer")
+                raise OrderCreationError("Quantity must be a positive integer")
 
             if product_id in products_ids:
-                raise ValueError("Product already in order")
+                raise OrderCreationError("Product already in order")
 
             products_ids.add(product_id)
 
@@ -44,17 +47,17 @@ class OrderService:
             }
 
             if len(products) != len(products_ids):
-                raise ValueError("Some products are not available")
+                raise OrderCreationError("Some products are not available")
 
 
             for item in items:
                 product = products_by_id[item["product"]]
 
                 if product.stock < item["quantity"]:
-                    raise ValueError("Not enough stock for product")
+                    raise OrderCreationError("Not enough stock for product")
 
                 if not product.is_active:
-                    raise ValueError("Product is not active")
+                    raise OrderCreationError("Product is not active")
 
             order = Order.objects.create(user=user)
 
@@ -90,7 +93,11 @@ class OrderService:
                 ) from exc
 
             is_owner = order.user_id == user.id
-            is_admin = user.userprofile.role == "ADMIN"
+
+            is_admin = UserProfile.objects.filter(
+                user=user,
+                role=UserProfile.Role.ADMIN
+            ).exists()
 
             if not is_owner and not is_admin:
                 raise OrderNotFoundError("Order not found")

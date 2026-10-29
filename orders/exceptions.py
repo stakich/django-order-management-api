@@ -6,3 +6,7 @@ class OrderNotFoundError(Exception):
 class OrderCannotBeCancelledError(Exception):
     """Order status does not allow cancellation."""
     pass
+
+class OrderCreationError(Exception):
+    """Order creation failed."""
+    pass

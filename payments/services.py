@@ -277,6 +277,16 @@ class PaymentService:
                         "Payment state has changed"
                     )
 
+                current_total = PaymentService.calculate_order_total(order)
+
+                if (
+                        current_total != locked_payment.amount
+                        or locked_payment.currency != "EUR"
+                ):
+                    raise PaymentNotAllowedError(
+                        "Order amount or currency has changed"
+                    )
+
                 locked_payment.status = Payment.Status.FAILED
                 locked_payment.save(update_fields=["status", "updated_at"])
 

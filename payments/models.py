@@ -33,7 +33,7 @@ class Payment(models.Model):
             models.UniqueConstraint(
                 fields=["order"],
                 condition=models.Q(
-                    status__in=["PENDING, SUCCEEDED"]
+                    status__in=["PENDING", "SUCCEEDED"]
                 ),
                 name="unique_active_or_succeeded_payment_per_order"
             )

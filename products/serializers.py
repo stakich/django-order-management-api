@@ -20,3 +20,5 @@ class CategorySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Category name cannot be empty"
             )
+
+        return value

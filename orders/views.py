@@ -1,12 +1,11 @@
-from urllib import request
-
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, NotFound
 
-from orders.exceptions import OrderNotFoundError, OrderCannotBeCancelledError
+from orders.exceptions import OrderNotFoundError, OrderCannotBeCancelledError, OrderCreationError
 from orders.models import Order
+from accounts.models import UserProfile
 from orders.serializers import OrderCreateSerializer, OrderSerializer
 from orders.services import OrderService
 from orders.utils.transaction_retry import retry_on_serialization_failure
@@ -21,7 +20,12 @@ class OrderListView(generics.ListCreateAPIView):
                     .order_by("-created_at"))
                     .prefetch_related("items__product"))
 
-        if current_user.userprofile.role == "ADMIN":
+        is_admin = UserProfile.objects.filter(
+            user=current_user,
+            role=UserProfile.Role.ADMIN
+        ).exists()
+
+        if is_admin:
             return queryset
 
         return queryset.filter(user=current_user)
@@ -44,7 +48,7 @@ class OrderListView(generics.ListCreateAPIView):
                 ),
                 max_attempts=3
             )
-        except ValueError as exc:
+        except OrderCreationError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
 
         order_serializer = OrderSerializer(order)
@@ -62,7 +66,12 @@ class OrderDetailView(generics.RetrieveAPIView):
                     .order_by("-created_at"))
                     .prefetch_related("items"))
 
-        if current_user.userprofile.role == "ADMIN":
+        is_admin = UserProfile.objects.filter(
+            user=current_user,
+            role=UserProfile.Role.ADMIN
+        ).exists()
+
+        if is_admin:
             return queryset
 
         return queryset.filter(user=current_user)
