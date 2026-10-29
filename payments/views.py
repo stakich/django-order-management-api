@@ -73,6 +73,8 @@ class StripeWebhookView(APIView):
         ):
             session = event["data"]["object"]
 
+
+
             if session["payment_status"] == "paid":
                 try:
                     PaymentService.handle_successful_checkout(session)
@@ -82,6 +84,10 @@ class StripeWebhookView(APIView):
                         {"detail": "Payment not found yet"},
                         status=status.HTTP_503_SERVICE_UNAVAILABLE
                     )
+        elif event["type"] == "checkout.session.expired":
+            session = event["data"]["object"]
+
+            PaymentService.handle_expired_checkout(session)
 
 
         return Response(

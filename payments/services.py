@@ -68,6 +68,8 @@ class PaymentService:
                 status=Payment.Status.PENDING,
             ).first()
 
+
+
             if payment is not None:
                 if payment.amount != total or payment.currency != "EUR":
                     raise PaymentNotAllowedError(
@@ -94,6 +96,7 @@ class PaymentService:
 
             session = stripe.checkout.Session.create(
                 mode="payment",
+                payment_method_types=["card"],
                 line_items=[
                     {
                         "price_data": {
@@ -224,12 +227,66 @@ class PaymentService:
                 "Stripe checkout session has expired"
             )
 
+        raise PaymentNotAllowedError(
+            "Stripe checkout session is no longer available"
+        )
+
     @staticmethod
     def create_checkout_session(user, order_id):
         payment = PaymentService.get_or_create_payment(
             user=user,
             order_id=order_id
         )
+        if payment.checkout_status == Payment.CheckoutStatus.EXPIRED:
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+
+            try:
+                stripe_session = stripe.checkout.Session.retrieve(
+                    payment.stripe_session_id
+                )
+            except stripe.error.StripeError as exc:
+                raise PaymentProviderError(
+                    "Unable to verify expired checkout session"
+                ) from exc
+
+
+            if (
+                stripe_session.status != "expired"
+                or stripe_session.payment_status != "unpaid"
+            ):
+                raise PaymentNotAllowedError(
+                    "Previous payment is not confirmed as expired and unpaid"
+                )
+            with transaction.atomic():
+                order = Order.objects.select_for_update().get(id=payment.order_id)
+
+                locked_payment = Payment.objects.select_for_update().get(
+                    id=payment.id
+                )
+
+                if order.status != Order.Status.PENDING:
+                    raise PaymentNotAllowedError("Order is no longer pending")
+
+
+                if (
+                    locked_payment.status != Payment.Status.PENDING
+                    or locked_payment.checkout_status != Payment.CheckoutStatus.EXPIRED
+                    or locked_payment.stripe_session_id != stripe_session.id
+                ):
+                    raise PaymentNotAllowedError(
+                        "Payment state has changed"
+                    )
+
+                locked_payment.status = Payment.Status.FAILED
+                locked_payment.save(update_fields=["status", "updated_at"])
+
+                payment = Payment.objects.create(
+                    order=order,
+                    amount=locked_payment.amount,
+                    currency=locked_payment.currency,
+                    status=Payment.Status.PENDING,
+                    provider="STRIPE",
+                )
 
         if payment.checkout_status == Payment.CheckoutStatus.READY:
             return PaymentService.get_existing_stripe_session(payment)
@@ -297,3 +354,24 @@ class PaymentService:
             order.save(update_fields=["status"])
 
             return payment
+
+    @staticmethod
+    def handle_expired_checkout(session):
+        with transaction.atomic():
+            payment = Payment.objects.get(
+                stripe_session_id=session["id"]
+            )
+
+            order = Order.objects.select_for_update().get(
+                id=payment.order_id
+            )
+
+            payment = Payment.objects.select_for_update().get(
+                id=payment.id
+            )
+
+            if (
+                    payment.status != Payment.Status.PENDING
+                    or payment.checkout_status != Payment.CheckoutStatus.READY
+            ):
+                return payment
