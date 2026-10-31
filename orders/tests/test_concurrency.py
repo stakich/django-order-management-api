@@ -11,6 +11,7 @@ from django.db import (
 from products.models import Product, Category
 from orders.models import Order, OrderItem
 from orders.services import OrderService
+from orders.exceptions import OrderCreationError
 
 
 User = get_user_model()
@@ -68,7 +69,9 @@ class OrderConcurrencyTests(TransactionTestCase):
 
                 return "success"
 
-            except ValueError:
+
+            except OrderCreationError:
+
                 return "insufficient_stock"
 
             finally:
