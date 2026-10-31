@@ -1,99 +1,83 @@
-<div align="center">
-
 # 🛒 Order Management API
 
-### A transactional e-commerce backend built with Django REST Framework
+**A transactional e-commerce backend built with Django REST Framework**
 
-**Django · Django REST Framework · PostgreSQL 17 · Docker · JWT Authentication**
+`Django` · `Django REST Framework` · `PostgreSQL 17` · `Docker Compose` · `JWT`
 
-A backend learning project focused on **real-world order workflows**, **inventory consistency**, **secure access control**, and **clean separation of business logic**.
+A backend project focused on **order workflows**, **inventory consistency under concurrent requests**, **role-based access control** and a **clean separation of business logic from HTTP code**.
 
-[Features](#-features) · [Architecture](#-architecture) · [Getting Started](#-getting-started) · [API](#-api-overview) · [Business Rules](#-business-rules) · [Roadmap](#-roadmap)
-
-</div>
-
----
+> **Status:** products, accounts and order workflows are implemented. The `payments` app is scaffolded; Stripe Checkout and webhooks are **planned, not implemented yet** (see the [roadmap](#-roadmap)).
 
 ## ✨ Overview
 
-Order Management API provides the backend foundation for a small online store. Customers can browse products, create orders containing multiple items, view their own orders, and cancel eligible orders. Administrators have broader order visibility.
+The API provides the backend of a small online store. Customers browse products, place orders with multiple items, view their own orders and cancel eligible ones. Administrators can see all orders.
 
-The core of the project is **transactional inventory management**: creating an order reserves stock, while cancelling an eligible order restores it. Database transactions and PostgreSQL row-level locks help keep the inventory consistent when concurrent requests arrive.
+Creating an order reserves stock and cancelling a pending order restores it. Database transactions and PostgreSQL row-level locks keep inventory correct when requests arrive at the same time.
 
-> **Project status:** Product, account and order workflows are implemented. A `payments` Django app has been created, but real payment processing and Stripe integration are **planned, not implemented**.
+## 🔑 Key engineering decisions
+
+- **All-or-nothing orders:** order creation and stock changes run inside one `transaction.atomic()` block.
+- **Row-level locking:** `SELECT ... FOR UPDATE` on products during inventory changes, with a stable lock order to reduce deadlock risk.
+- **Retry on serialization failures:** a helper retries operations that fail with PostgreSQL `SQLSTATE 40001`.
+- **Service layer:** business rules live in `OrderService`; views only handle authentication, validation and HTTP responses.
+- **Price snapshots:** each order item stores its `unit_price` at checkout, so later catalog changes never rewrite past orders.
+- **Safe access control:** orders that belong to other users return `404 Not Found` instead of revealing that they exist.
 
 ## ✅ Features
 
-### Products & categories
-- Products with name, description, SKU, price, stock, category and active status.
-- Product listing and detail access through a REST API.
-- Product availability checks during order creation.
-- Role-based product management capabilities.
+**Products**
+- Products with name, description, SKU, price, stock, category and active status
+- Product list and detail endpoints
+- Stock and availability checks during order creation
 
-### Accounts & authentication
-- User registration with password confirmation and unique-email validation.
-- Password hashing using Django's built-in user management.
-- JWT-based authentication via Django REST Framework Simple JWT.
-- `UserProfile` with `CUSTOMER` and `ADMIN` roles.
-- Customer data access restricted to their own orders; administrators can view all orders.
+**Accounts and authentication**
+- Registration with password confirmation and unique-email validation
+- JWT authentication with Simple JWT
+- `UserProfile` with `CUSTOMER` and `ADMIN` roles
 
-### Orders & inventory
-- Create an order containing one or more products.
-- Save the price of each item at checkout (`unit_price`), preserving historical order prices.
-- Reject invalid quantities, duplicate products, inactive products and insufficient stock.
-- Decrement inventory as part of the order creation transaction.
-- List orders and retrieve individual order details.
-- Cancel a **PENDING** order and restore its reserved stock.
-- Prevent repeated cancellations and invalid order-state transitions.
-- Hide inaccessible orders behind `404 Not Found` responses.
-
-### Reliability & concurrency
-- `transaction.atomic()` for all-or-nothing order mutations.
-- PostgreSQL `SELECT ... FOR UPDATE` row locking during inventory changes.
-- Stable product-lock ordering to reduce concurrency hazards.
-- Retry helper for PostgreSQL serialization failures (`SQLSTATE 40001`).
-- Custom service-layer exceptions mapped to appropriate HTTP responses in views.
+**Orders and inventory**
+- Create an order with one or more items
+- Reject invalid quantities, duplicate products, inactive products and insufficient stock
+- List orders and retrieve order details (own orders for customers, all orders for admins)
+- Cancel a `PENDING` order and restore its stock exactly once
+- Block repeated cancellations and invalid state transitions
 
 ## 🏗 Architecture
 
-The project separates **HTTP concerns** from **business rules**:
-
-```text
+```
 Client (HTTP / JSON)
         │
         ▼
-Django REST Framework Views
-  ├─ Authentication & permissions
+Django REST Framework views
+  ├─ Authentication and permissions
   ├─ Request validation / serialization
-  └─ HTTP response & error mapping
+  └─ HTTP response and error mapping
         │
         ▼
-Service Layer (OrderService)
+Service layer (OrderService)
   ├─ Order creation / cancellation
   ├─ Business rule validation
-  └─ Atomic transactions / locking
+  └─ Atomic transactions and locking
         │
         ▼
 Django ORM → PostgreSQL 17
 ```
 
-### Django applications
+### Project structure
 
-```text
+```
 .
 ├── accounts/       # Registration, user profiles, roles
 ├── products/       # Product catalog and categories
 ├── orders/         # Orders, order items, services, serializers
 │   └── utils/      # Database transaction retry helper
-├── payments/       # Scaffolded; payment integration is next
+├── payments/       # Scaffolded; Stripe integration is planned
 ├── config/         # Django settings and root URL configuration
-├── docker-compose.yml
-├── manage.py
-├── .env.example     # Example configuration (no real secrets)
-└── README.md
+├── compose.yaml    # PostgreSQL for local development
+├── requirements.txt
+├── .env.example    # Example configuration (no real secrets)
+└── manage.py
 ```
-
-> Directory structure is illustrative; certain modules (such as `payments/services.py`) will be added as the project develops.
 
 ## 🔄 Order lifecycle
 
@@ -107,10 +91,10 @@ flowchart TD
     F -- Cancel --> G[Lock order and products]
     G --> H[Restore stock]
     H --> I[CANCELLED]
-    F -- Payment --> J[PAID - planned payment workflow]
+    F -- Payment --> J[PAID - planned]
 ```
 
-**Current implemented states:** `PENDING`, `PAID`, `CANCELLED`. Creation defaults to `PENDING`; cancellation changes `PENDING → CANCELLED`. **Automatic payment-driven transitions to `PAID` are not implemented yet.**
+Implemented states: `PENDING`, `PAID`, `CANCELLED`. New orders start as `PENDING`, and cancelling changes `PENDING → CANCELLED`. Automatic `PENDING → PAID` transitions after payment are not implemented yet.
 
 ## 🧰 Tech stack
 
@@ -122,96 +106,47 @@ flowchart TD
 | Authentication | Simple JWT |
 | Filtering | django-filter |
 | Database | PostgreSQL 17 |
-| Database access | Django ORM |
 | Local infrastructure | Docker Compose |
-| Configuration | python-dotenv / environment variables |
+| Configuration | python-dotenv, environment variables |
 
 ## 🚀 Getting started
 
-### Prerequisites
-
-- Python and pip (the project is being developed with Python 3.14)
-- Docker with Docker Compose
-- Git
-
-### 1. Clone the project
+**Prerequisites:** Python 3.14 (used in development), Docker with Docker Compose, Git.
 
 ```bash
+# 1. Clone the project
 git clone https://github.com/stakich/django-order-management-api.git
 cd django-order-management-api
-```
 
-### 2. Create a virtual environment
-
-```bash
+# 2. Create and activate a virtual environment
 python -m venv .venv
-source .venv/bin/activate
-```
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-### 3. Install dependencies
-
-```bash
+# 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. Configure environment variables
+cp .env.example .env             # then edit .env with your own values
+
+# 5. Start PostgreSQL
+docker compose up -d postgres
+
+# 6. Apply migrations and run the API
+python manage.py migrate
+python manage.py runserver
 ```
 
-> Before publishing, generate and commit `requirements.txt` from your working environment if it does not yet exist: `python -m pip freeze > requirements.txt`.
+The API is available at `http://127.0.0.1:8000/api/v1/`.
 
-### 4. Configure environment variables
-
-Copy the example configuration and edit it locally:
-
-```bash
-cp .env.example .env
-```
-
-Example `.env.example` content:
-
-```dotenv
-DJANGO_SECRET_KEY=replace-with-a-random-secret-key
-DJANGO_DEBUG=True
-POSTGRES_DB=order_management
-POSTGRES_USER=django_user
-POSTGRES_PASSWORD=replace-with-a-strong-password
-POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
-```
-
-Generate a Django secret key with:
+Generate a Django secret key for `.env` with:
 
 ```bash
 python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
 ```
 
-**Never commit `.env`, passwords, private keys or access tokens.** This project expects secrets in environment variables.
-
-### 5. Start PostgreSQL
-
-```bash
-docker compose up -d postgres
-```
-
-Docker Compose exposes PostgreSQL only on `127.0.0.1:5432` and persists data in the `postgres_data` volume. The Django application runs on the host in this development setup.
-
-> Do not run `docker compose down -v` unless you intentionally want to delete the database volume.
-
-### 6. Apply database migrations
-
-```bash
-python manage.py migrate
-python manage.py check
-```
-
-### 7. Start the API
-
-```bash
-python manage.py runserver
-```
-
-Local API base URL: `http://127.0.0.1:8000/api/v1/`
+> Never commit `.env`. PostgreSQL is exposed only on `127.0.0.1:5432` and its data persists in the `postgres_data` volume. Do not run `docker compose down -v` unless you want to delete the database.
 
 ## 📡 API overview
-
-The following routes reflect the currently discussed API implementation. Confirm the exact authentication and product URL prefixes against the project's `urls.py` before publishing.
 
 | Method | Endpoint | Description | Auth |
 |---|---|---|---|
@@ -220,8 +155,8 @@ The following routes reflect the currently discussed API implementation. Confirm
 | `GET` | `/api/v1/products/` | List products | Configured permissions |
 | `GET` | `/api/v1/orders/` | List own orders (all for admin) | Required |
 | `POST` | `/api/v1/orders/` | Create an order | Required |
-| `GET` | `/api/v1/orders/{id}/` | Retrieve permitted order | Required |
-| `POST` | `/api/v1/orders/{id}/cancel/` | Cancel pending order | Required |
+| `GET` | `/api/v1/orders/{id}/` | Retrieve a permitted order | Required |
+| `POST` | `/api/v1/orders/{id}/cancel/` | Cancel a pending order | Required |
 
 ### Example: log in
 
@@ -231,7 +166,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/login/ \
   -d '{"username":"your_username","password":"your_password"}'
 ```
 
-Copy the returned **access** token to your shell without printing it:
+Store the returned `access` token without printing it:
 
 ```bash
 read -rsp 'JWT access token: ' ACCESS_TOKEN; echo
@@ -239,21 +174,14 @@ read -rsp 'JWT access token: ' ACCESS_TOKEN; echo
 
 ### Example: create an order
 
-The API accepts the field **`product`** (not `product_id`) for order item input:
-
 ```bash
 curl -i -X POST http://127.0.0.1:8000/api/v1/orders/ \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{
-    "items": [
-      {"product": 1, "quantity": 2},
-      {"product": 2, "quantity": 3}
-    ]
-  }'
+  -d '{"items": [{"product": 1, "quantity": 2}, {"product": 2, "quantity": 3}]}'
 ```
 
-**Expected:** `201 Created`, a new `PENDING` order and reduced inventory.
+Expected: `201 Created`, a new `PENDING` order and reduced stock.
 
 ### Example: cancel an order
 
@@ -262,73 +190,43 @@ curl -i -X POST http://127.0.0.1:8000/api/v1/orders/2/cancel/ \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-**Expected on success:** `200 OK` with `"status": "CANCELLED"`; ordered quantities are returned to inventory.
+Expected: `200 OK` with `"status": "CANCELLED"` and the stock restored.
 
-### Typical order errors
+### Common errors
 
-| HTTP status | Meaning |
+| Status | Meaning |
 |---|---|
-| `400 Bad Request` | Invalid order data or order cannot be cancelled |
+| `400 Bad Request` | Invalid order data, or the order cannot be cancelled |
 | `401 Unauthorized` | Missing, invalid or expired JWT |
-| `404 Not Found` | Order does not exist or is inaccessible to the user |
+| `404 Not Found` | The order does not exist or is not accessible to the user |
 
 ## 📏 Business rules
 
-1. A new order starts in `PENDING` status.
-2. An order must contain at least one valid product item with positive quantity.
-3. The same product cannot be included twice in the same order request.
-4. Products must be active and have sufficient stock.
-5. Stock changes and order creation occur in one database transaction.
+1. A new order starts as `PENDING`.
+2. An order must contain at least one valid item with a positive quantity.
+3. The same product cannot appear twice in one order.
+4. Products must be active and have enough stock.
+5. Stock changes and order creation happen in one database transaction.
 6. Customers see and cancel only their own orders; administrators have broader access.
-7. Only `PENDING` orders may be cancelled.
-8. Cancellation restores each item's quantity **exactly once**.
-9. Order item prices are snapshots; changes to the product catalog do not rewrite past prices.
-10. Payment confirmation must eventually be validated server-side before marking orders as `PAID`.
-
-## 🛡 Security notes
-
-- Credentials and Django `SECRET_KEY` are loaded from environment variables.
-- JWT is required for protected order endpoints.
-- Service-level ownership checks prevent access to someone else's order.
-- Failed business operations are rolled back with database transactions.
-- Secrets, virtual environments and IDE files should be excluded through `.gitignore`.
-- `DJANGO_DEBUG=True` and Django's built-in development server are **development-only** settings.
+7. Only `PENDING` orders can be cancelled, and cancellation restores each quantity exactly once.
+8. Order item prices are snapshots of the price at checkout.
+9. Payment confirmation will be verified server-side before an order is marked `PAID`.
 
 ## 🗺 Roadmap
 
-- [x] Product and category models
-- [x] Customer registration and JWT authentication
-- [x] User profiles and customer/admin roles
+- [x] Products and categories
+- [x] Registration, JWT authentication and customer/admin roles
 - [x] Transactional order creation with inventory deduction
-- [x] Customer/admin order listing and detail access
-- [x] Order cancellation and inventory restoration
+- [x] Order listing, details and cancellation with stock restoration
 - [x] PostgreSQL row locking and serialization retry helper
+- [ ] Automated tests (order creation, cancellation, concurrent stock updates)
 - [ ] Payment model and payment attempt tracking
 - [ ] Stripe Checkout integration (test mode)
-- [ ] Verified Stripe webhook processing
-- [ ] Automatic `PENDING → PAID` transition after successful payment
-- [ ] Idempotency and safeguards against payment/cancellation races
-- [ ] API documentation (OpenAPI / Swagger)
+- [ ] Verified Stripe webhook processing and automatic `PENDING → PAID`
+- [ ] Idempotency and protection against payment/cancellation races
+- [ ] OpenAPI / Swagger documentation
 - [ ] Production deployment configuration
-
-## 🎯 Learning goals
-
-This project is built to practice backend concepts beyond basic CRUD:
-
-- REST API design and HTTP status handling
-- Serializer validation and business-service boundaries
-- Authentication versus authorization
-- Django ORM relationships and query optimization
-- Transactions, row-level locks and concurrency control
-- Domain-specific exceptions
-- External payment-service integration and webhook security
 
 ---
 
-<div align="center">
-
-**Built as a hands-on Django backend project.**
-
-Maintained by [@stakich](https://github.com/stakich).
-
-</div>
+Built as a hands-on Django backend project by [@stakich](https://github.com/stakich).
