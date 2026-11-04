@@ -129,23 +129,23 @@ class PaymentService:
             locked_payment = Payment.objects.select_for_update().get(
                 id=payment.id
             )
-            if locked_payment.stripe_session_id  == session.id and locked_payment.checkout_status == Payment.CheckoutStatus.READY:
+            if (
+                    locked_payment.stripe_session_id == session.id
+                    and locked_payment.checkout_status == Payment.CheckoutStatus.READY
+            ):
                 return locked_payment
 
-            if (
-                    locked_payment.stripe_session_id is not None
-                    and locked_payment.stripe_session_id != session.id
-            ):
+            if locked_payment.stripe_session_id is not None:
                 raise PaymentNotAllowedError(
                     "Payment already has a different Stripe session"
                 )
 
-            if locked_payment.checkout_status != Payment.CheckoutStatus.CREATING:
-                raise PaymentNotAllowedError()
-
-            if locked_payment.status != Payment.Status.PENDING:
+            if (
+                    locked_payment.status != Payment.Status.PENDING
+                    or locked_payment.checkout_status != Payment.CheckoutStatus.CREATING
+            ):
                 raise PaymentNotAllowedError(
-                    "Payment is no longer pending"
+                    "Payment is no longer available for checkout"
                 )
 
             locked_payment.stripe_session_id = session.id
@@ -188,6 +188,9 @@ class PaymentService:
         if not (timedelta(minutes=10) < elapsed < timedelta(minutes=20)):
             return False
 
+        if timezone.now() - payment.created_at >= timedelta(minutes=20):
+            return False
+
         return True
 
     @staticmethod
@@ -195,7 +198,10 @@ class PaymentService:
         with transaction.atomic():
             payment = Payment.objects.select_for_update().get(id=payment_id)
 
-            if payment.checkout_status == Payment.CheckoutStatus.NOT_STARTED:
+            if (
+                    payment.checkout_status == Payment.CheckoutStatus.NOT_STARTED
+                    or PaymentService.can_retry_checkout_creation(payment)
+            ):
                 payment.checkout_status = Payment.CheckoutStatus.CREATING
                 payment.checkout_claimed_at = timezone.now()
 
@@ -314,7 +320,8 @@ class PaymentService:
 
     @staticmethod
     def handle_successful_checkout(session):
-        metadata = session.to_dict().get("metadata") or {}
+        session_data = session.to_dict()
+        metadata = session_data.get("metadata") or {}
         payment_id = metadata.get("payment_id")
 
         if not payment_id:
@@ -335,12 +342,33 @@ class PaymentService:
 
             # Validate Stripe payment
             if (
-                    payment.stripe_session_id != session["id"]
+                    session_data.get("mode") != "payment"
                     or session["payment_status"] != "paid"
                     or session["amount_total"] != PaymentService.convert_to_cents(payment.amount)
                     or session["currency"].upper() != payment.currency.upper()
+                    or metadata.get("order_id") != str(order.id)
+                    or payment.provider != "STRIPE"
             ):
                 raise PaymentNotAllowedError("Invalid Stripe payment")
+
+            if payment.stripe_session_id is not None:
+                if payment.stripe_session_id != session["id"]:
+                    raise PaymentNotAllowedError(
+                        "Stripe session does not match payment"
+                    )
+
+            elif (
+                    payment.status == Payment.Status.PENDING
+                    and order.status == Order.Status.PENDING
+                    and payment.checkout_status == Payment.CheckoutStatus.CREATING
+            ):
+                payment.stripe_session_id = session["id"]
+                payment.checkout_status = Payment.CheckoutStatus.READY
+
+            else:
+                raise PaymentNotAllowedError(
+                    "Unexpected payment state"
+                )
 
             # Already processed
             if (
@@ -356,12 +384,21 @@ class PaymentService:
             ):
                 raise PaymentNotAllowedError("Invalid payment or order status")
 
+
             # Complete payment
             payment.status = Payment.Status.SUCCEEDED
             order.status = Order.Status.PAID
 
-            payment.save(update_fields=["status", "updated_at"])
-            order.save(update_fields=["status"])
+            payment.save(
+                update_fields=[
+                    "status",
+                    "stripe_session_id",
+                    "checkout_status",
+                    "updated_at",
+                ]
+            )
+
+            order.save(update_fields=["status", "updated_at"])
 
             return payment
 
@@ -376,15 +413,29 @@ class PaymentService:
                 id=payment.order_id
             )
 
+
+
             payment = Payment.objects.select_for_update().get(
                 id=payment.id
             )
+
+            if session["status"] != "expired" or session["payment_status"] != "unpaid":
+                return payment
+
+            if order.status != Order.Status.PENDING:
+                return payment
+
 
             if (
                     payment.status != Payment.Status.PENDING
                     or payment.checkout_status != Payment.CheckoutStatus.READY
             ):
                 return payment
+
+            payment.checkout_status = Payment.CheckoutStatus.EXPIRED
+            payment.save(update_fields=["checkout_status", "updated_at"])
+
+            return payment
 
             
 
