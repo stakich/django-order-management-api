@@ -126,15 +126,41 @@ class PaymentService:
     @staticmethod
     def save_stripe_session(payment, session):
         with transaction.atomic():
+            payment_order_id = Payment.objects.values_list(
+                "order_id", flat=True
+            ).get(id=payment.id)
+
+            order = Order.objects.select_for_update().get(
+                id=payment_order_id
+            )
+
             locked_payment = Payment.objects.select_for_update().get(
                 id=payment.id
             )
+
             if (
                     locked_payment.stripe_session_id == session.id
                     and locked_payment.checkout_status == Payment.CheckoutStatus.READY
+                    and (
+                    (
+                            locked_payment.status == Payment.Status.SUCCEEDED
+                            and order.status == Order.Status.PAID
+                    )
+                    or (
+                            locked_payment.status == Payment.Status.PENDING
+                            and order.status == Order.Status.PENDING
+                    )
+            )
             ):
                 return locked_payment
 
+            # New session cannot be saved for a cancelled or paid order
+            if order.status != Order.Status.PENDING:
+                raise PaymentNotAllowedError(
+                    "Order is no longer available for checkout"
+                )
+
+            # Reject a different Stripe session
             if locked_payment.stripe_session_id is not None:
                 raise PaymentNotAllowedError(
                     "Payment already has a different Stripe session"
@@ -150,9 +176,16 @@ class PaymentService:
 
             locked_payment.stripe_session_id = session.id
             locked_payment.checkout_status = Payment.CheckoutStatus.READY
-            locked_payment.save(update_fields=["stripe_session_id", "updated_at", "checkout_status"])
 
-        return locked_payment
+            locked_payment.save(
+                update_fields=[
+                    "stripe_session_id",
+                    "checkout_status",
+                    "updated_at",
+                ]
+            )
+
+            return locked_payment
 
     @staticmethod
     def is_checkout_stuck(payment):
@@ -171,6 +204,9 @@ class PaymentService:
 
     @staticmethod
     def can_retry_checkout_creation(payment):
+        if payment.status != Payment.Status.PENDING:
+            return False
+
         if payment.checkout_status != Payment.CheckoutStatus.CREATING:
             return False
 
@@ -180,15 +216,14 @@ class PaymentService:
         if payment.checkout_claimed_at is None:
             return False
 
-        if payment.status != Payment.Status.PENDING:
+        now = timezone.now()
+
+        # Wait before retrying the previous attempt
+        if now - payment.checkout_claimed_at <= timedelta(minutes=10):
             return False
 
-        elapsed = timezone.now() - payment.checkout_claimed_at
-
-        if not (timedelta(minutes=10) < elapsed < timedelta(minutes=20)):
-            return False
-
-        if timezone.now() - payment.created_at >= timedelta(minutes=20):
+        # Do not retry beyond the conservative idempotency window
+        if now - payment.created_at >= timedelta(hours=23):
             return False
 
         return True
@@ -196,7 +231,24 @@ class PaymentService:
     @staticmethod
     def claim_checkout_creation(payment_id):
         with transaction.atomic():
-            payment = Payment.objects.select_for_update().get(id=payment_id)
+
+            payment_order_id = Payment.objects.values_list(
+                "order_id", flat=True
+            ).get(id=payment_id)
+
+            order = Order.objects.select_for_update().get(
+                id=payment_order_id
+            )
+
+            payment = Payment.objects.select_for_update().get(
+                id=payment_id
+            )
+
+            if order.status != Order.Status.PENDING:
+                return False
+
+            if payment.status != Payment.Status.PENDING:
+                return False
 
             if (
                     payment.checkout_status == Payment.CheckoutStatus.NOT_STARTED
@@ -206,8 +258,13 @@ class PaymentService:
                 payment.checkout_claimed_at = timezone.now()
 
                 payment.save(
-                    update_fields=["checkout_status", "updated_at", "checkout_claimed_at"]
+                    update_fields=[
+                        "checkout_status",
+                        "checkout_claimed_at",
+                        "updated_at",
+                    ]
                 )
+
                 return True
 
             return False
@@ -221,16 +278,23 @@ class PaymentService:
 
         stripe.api_key = settings.STRIPE_SECRET_KEY
 
-        session = stripe.checkout.Session.retrieve(
-            payment.stripe_session_id
-        )
+        try:
+            session = stripe.checkout.Session.retrieve(
+                payment.stripe_session_id
+            )
+        except stripe.error.StripeError as exc:
+            raise PaymentProviderError(
+                "Unable to retrieve Stripe checkout session"
+            ) from exc
 
         if session.status == "open" and session.payment_status == "unpaid":
             return session.url
 
-        if session.status == "expired":
+        if session.status == "expired" and session.payment_status == "unpaid":
+            PaymentService.handle_expired_checkout(session)
+
             raise PaymentNotAllowedError(
-                "Stripe checkout session has expired"
+                "Stripe checkout session has expired. Please retry checkout."
             )
 
         raise PaymentNotAllowedError(
@@ -436,6 +500,169 @@ class PaymentService:
             payment.save(update_fields=["checkout_status", "updated_at"])
 
             return payment
+
+    @staticmethod
+    def reconcile_stuck_checkout(payment_id, session_id):
+        payment = Payment.objects.get(pk=payment_id)
+
+        # Only recover abandoned checkout attempts.
+        if (
+                payment.status != Payment.Status.PENDING
+                or payment.checkout_status != Payment.CheckoutStatus.CREATING
+                or payment.stripe_session_id is not None
+                or payment.checkout_claimed_at is None
+                or timezone.now() - payment.created_at < timedelta(hours=23)
+                or timezone.now() - payment.checkout_claimed_at < timedelta(minutes=10)
+        ):
+            raise PaymentNotAllowedError(
+                "Payment is not eligible for reconciliation"
+            )
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+
+        try:
+            session = stripe.checkout.Session.retrieve(session_id)
+        except stripe.error.StripeError as exc:
+            raise PaymentProviderError(
+                "Unable to verify Stripe checkout session"
+            ) from exc
+
+        data = session.to_dict()
+        metadata = data.get("metadata") or {}
+
+        # Never trust the supplied session ID without validation.
+        if (
+                data.get("id") != session_id
+                or data.get("mode") != "payment"
+                or metadata.get("payment_id") != str(payment.id)
+                or metadata.get("order_id") != str(payment.order_id)
+                or data.get("amount_total")
+                != PaymentService.convert_to_cents(payment.amount)
+                or (data.get("currency") or "").upper() != payment.currency.upper()
+                or payment.provider != "STRIPE"
+        ):
+            raise PaymentNotAllowedError(
+                "Stripe session does not match payment"
+            )
+
+        status = data.get("status")
+        payment_status = data.get("payment_status")
+
+        # Reuse the existing successful-payment handler.
+        if status == "complete" and payment_status == "paid":
+            return PaymentService.handle_successful_checkout(session)
+
+        if (
+                (status, payment_status)
+                not in [
+            ("open", "unpaid"),
+            ("expired", "unpaid"),
+        ]
+        ):
+            raise PaymentNotAllowedError(
+                "Stripe session state requires manual investigation"
+            )
+
+        with transaction.atomic():
+            # Consistent lock order: Order -> Payment.
+            order = Order.objects.select_for_update().get(
+                pk=payment.order_id
+            )
+
+            locked_payment = Payment.objects.select_for_update().get(
+                pk=payment_id
+            )
+
+            if (
+                    order.status != Order.Status.PENDING
+                    or locked_payment.status != Payment.Status.PENDING
+                    or locked_payment.checkout_status
+                    != Payment.CheckoutStatus.CREATING
+                    or locked_payment.stripe_session_id is not None
+            ):
+                raise PaymentNotAllowedError(
+                    "Payment state changed during reconciliation"
+                )
+
+            locked_payment.stripe_session_id = session_id
+
+            if status == "open":
+                locked_payment.checkout_status = (
+                    Payment.CheckoutStatus.READY
+                )
+            else:
+                locked_payment.checkout_status = (
+                    Payment.CheckoutStatus.EXPIRED
+                )
+
+            locked_payment.save(
+                update_fields=[
+                    "stripe_session_id",
+                    "checkout_status",
+                    "updated_at",
+                ]
+            )
+
+            return locked_payment
+
+    @staticmethod
+    def reconcile_known_checkout(payment_id):
+        payment = Payment.objects.select_related("order").get(pk=payment_id)
+
+        if not payment.stripe_session_id:
+            raise PaymentNotAllowedError(
+                "Payment does not have a Stripe session"
+            )
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+
+        try:
+            session = stripe.checkout.Session.retrieve(
+                payment.stripe_session_id
+            )
+        except stripe.error.StripeError as exc:
+            raise PaymentProviderError(
+                "Unable to verify Stripe checkout session"
+            ) from exc
+
+        data = session.to_dict()
+        metadata = data.get("metadata") or {}
+
+        if (
+                data.get("id") != payment.stripe_session_id
+                or data.get("mode") != "payment"
+                or metadata.get("payment_id") != str(payment.id)
+                or metadata.get("order_id") != str(payment.order_id)
+                or data.get("amount_total")
+                != PaymentService.convert_to_cents(payment.amount)
+                or (data.get("currency") or "").upper() != payment.currency.upper()
+                or payment.provider != "STRIPE"
+        ):
+            raise PaymentNotAllowedError(
+                "Stripe session does not match payment"
+            )
+
+        status = data.get("status")
+        payment_status = data.get("payment_status")
+
+        if status == "complete" and payment_status == "paid":
+            return PaymentService.handle_successful_checkout(session)
+
+        if status == "expired" and payment_status == "unpaid":
+            return PaymentService.handle_expired_checkout(session)
+
+        if status == "open" and payment_status == "unpaid":
+            payment.refresh_from_db(fields=["status", "checkout_status"])
+
+            if (
+                    payment.status == Payment.Status.PENDING
+                    and payment.checkout_status == Payment.CheckoutStatus.READY
+            ):
+                return payment
+
+        raise PaymentNotAllowedError(
+            "Stripe checkout session requires manual investigation"
+        )
 
             
 
