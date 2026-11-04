@@ -77,11 +77,20 @@ class PaymentContractTests(APITestCase):
 
     def test_successful_payment_is_idempotent_and_rejects_amount_mismatch(self):
         payment = Payment.objects.create(order=self.order, amount=Decimal('20.00'), currency='EUR', stripe_session_id='cs_test_123', checkout_status=Payment.CheckoutStatus.READY)
+
         def event(amount):
             return {
-                'id': 'cs_test_123', 'payment_status': 'paid', 'amount_total': amount,
-                'currency': 'eur', 'metadata': {'payment_id': str(payment.id)},
+                'id': 'cs_test_123',
+                'mode': 'payment',
+                'payment_status': 'paid',
+                'amount_total': amount,
+                'currency': 'eur',
+                'metadata': {
+                    'payment_id': str(payment.id),
+                    'order_id': str(self.order.id),
+                },
             }
+
         from stripe import StripeObject
         bad = StripeObject.construct_from(event(1999), None)
         from payments.exceptions import PaymentNotAllowedError
