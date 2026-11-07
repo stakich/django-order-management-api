@@ -1,5 +1,8 @@
 import decimal
 import stripe
+import logging
+
+logger = logging.getLogger(__name__)
 from django.utils import timezone
 from datetime import timedelta
 
@@ -96,7 +99,6 @@ class PaymentService:
 
             session = stripe.checkout.Session.create(
                 mode="payment",
-                payment_method_types=["card"],
                 line_items=[
                     {
                         "price_data": {
@@ -315,6 +317,7 @@ class PaymentService:
                     payment.stripe_session_id
                 )
             except stripe.error.StripeError as exc:
+                logger.exception("Stripe Checkout session creation failed")
                 raise PaymentProviderError(
                     "Unable to verify expired checkout session"
                 ) from exc
@@ -664,5 +667,5 @@ class PaymentService:
             "Stripe checkout session requires manual investigation"
         )
 
-            
+
 
