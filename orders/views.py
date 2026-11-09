@@ -1,14 +1,15 @@
 from rest_framework import generics, status
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError, NotFound
 
-from orders.exceptions import OrderNotFoundError, OrderCannotBeCancelledError, OrderCreationError
-from orders.models import Order
 from accounts.models import UserProfile
+from orders.exceptions import OrderCannotBeCancelledError, OrderCreationError, OrderNotFoundError
+from orders.models import Order
 from orders.serializers import OrderCreateSerializer, OrderSerializer
 from orders.services import OrderService
 from orders.utils.transaction_retry import retry_on_serialization_failure
+
 
 class OrderListView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
@@ -16,13 +17,10 @@ class OrderListView(generics.ListCreateAPIView):
     def get_queryset(self):
         current_user = self.request.user
 
-        queryset = ((Order.objects
-                    .order_by("-created_at"))
-                    .prefetch_related("items__product"))
+        queryset = (Order.objects.order_by("-created_at")).prefetch_related("items__product")
 
         is_admin = UserProfile.objects.filter(
-            user=current_user,
-            role=UserProfile.Role.ADMIN
+            user=current_user, role=UserProfile.Role.ADMIN
         ).exists()
 
         if is_admin:
@@ -43,10 +41,9 @@ class OrderListView(generics.ListCreateAPIView):
         try:
             order = retry_on_serialization_failure(
                 operation=lambda: OrderService.create_order(
-                    user=request.user,
-                    items=serializer.validated_data["items"]
+                    user=request.user, items=serializer.validated_data["items"]
                 ),
-                max_attempts=3
+                max_attempts=3,
             )
         except OrderCreationError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
@@ -55,6 +52,7 @@ class OrderListView(generics.ListCreateAPIView):
 
         return Response(order_serializer.data, status=status.HTTP_201_CREATED)
 
+
 class OrderDetailView(generics.RetrieveAPIView):
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
@@ -62,19 +60,17 @@ class OrderDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         current_user = self.request.user
 
-        queryset = ((Order.objects
-                    .order_by("-created_at"))
-                    .prefetch_related("items"))
+        queryset = (Order.objects.order_by("-created_at")).prefetch_related("items")
 
         is_admin = UserProfile.objects.filter(
-            user=current_user,
-            role=UserProfile.Role.ADMIN
+            user=current_user, role=UserProfile.Role.ADMIN
         ).exists()
 
         if is_admin:
             return queryset
 
         return queryset.filter(user=current_user)
+
 
 class OrderCancelView(generics.GenericAPIView):
     serializer_class = OrderSerializer
@@ -84,11 +80,8 @@ class OrderCancelView(generics.GenericAPIView):
 
         try:
             order = retry_on_serialization_failure(
-                operation=lambda: OrderService.cancel_order(
-                    user=request.user,
-                    order_id=pk
-                ),
-                max_attempts=3
+                operation=lambda: OrderService.cancel_order(user=request.user, order_id=pk),
+                max_attempts=3,
             )
         except OrderNotFoundError as exc:
             raise NotFound(str(exc)) from exc
@@ -97,11 +90,4 @@ class OrderCancelView(generics.GenericAPIView):
             raise ValidationError({"detail": str(exc)}) from exc
         serializer = self.get_serializer(order)
 
-        return Response(
-            serializer.data,
-            status=status.HTTP_200_OK
-        )
-
-
-
-
+        return Response(serializer.data, status=status.HTTP_200_OK)

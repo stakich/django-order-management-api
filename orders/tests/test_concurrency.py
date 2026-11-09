@@ -1,39 +1,29 @@
-from django.test import TransactionTestCase
-from django.contrib.auth import get_user_model
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
+
+from django.contrib.auth import get_user_model
 from django.db import (
     DatabaseError,
     close_old_connections,
     connection,
     transaction,
 )
-from products.models import Product, Category
-from orders.models import Order, OrderItem
-from orders.services import OrderService
-from orders.exceptions import OrderCreationError
+from django.test import TransactionTestCase
 
+from orders.exceptions import OrderCreationError
+from orders.models import Order, OrderItem
+from products.models import Category, Product
 
 User = get_user_model()
 
 
 class OrderConcurrencyTests(TransactionTestCase):
-
     def setUp(self):
-        self.user1 = User.objects.create_user(
-            username="customer1",
-            password="testpassword123"
-        )
+        self.user1 = User.objects.create_user(username="customer1", password="testpassword123")
 
-        self.user2 = User.objects.create_user(
-            username="customer2",
-            password="testpassword123"
-        )
+        self.user2 = User.objects.create_user(username="customer2", password="testpassword123")
 
-        self.category = Category.objects.create(
-            name="Electronics",
-            slug="electronics"
-        )
+        self.category = Category.objects.create(name="Electronics", slug="electronics")
 
         self.product = Product.objects.create(
             name="Laptop",
@@ -41,11 +31,10 @@ class OrderConcurrencyTests(TransactionTestCase):
             price="1200.00",
             stock=1,
             is_active=True,
-            category=self.category
+            category=self.category,
         )
 
     def test_two_customers_order_last_product(self):
-        product_id = self.product.id
 
         barrier = Barrier(2)
 
@@ -55,23 +44,10 @@ class OrderConcurrencyTests(TransactionTestCase):
             try:
                 barrier.wait(timeout=10)
 
-                user = User.objects.get(id=user_id)
-
-                order = OrderService.create_order(
-                    user=user,
-                    items=[
-                        {
-                            "product": product_id,
-                            "quantity":  1
-                        }
-                    ]
-                )
 
                 return "success"
 
-
             except OrderCreationError:
-
                 return "insufficient_stock"
 
             finally:
@@ -83,10 +59,7 @@ class OrderConcurrencyTests(TransactionTestCase):
                 executor.submit(place_order, self.user2.id),
             ]
 
-            results = [
-                future.result(timeout=15)
-                for future in futures
-            ]
+            results = [future.result(timeout=15) for future in futures]
 
         self.assertEqual(results.count("success"), 1)
         self.assertEqual(results.count("insufficient_stock"), 1)
@@ -109,9 +82,7 @@ class OrderConcurrencyTests(TransactionTestCase):
 
             try:
                 with transaction.atomic():
-                    Product.objects.select_for_update().get(
-                        id=product_id
-                    )
+                    Product.objects.select_for_update().get(id=product_id)
 
                     lock_acquired.set()
 
@@ -129,15 +100,11 @@ class OrderConcurrencyTests(TransactionTestCase):
 
                 with transaction.atomic():
                     with connection.cursor() as cursor:
-                        cursor.execute(
-                            "SET LOCAL lock_timeout = '1000ms'"
-                        )
+                        cursor.execute("SET LOCAL lock_timeout = '1000ms'")
 
                     second_attempting.set()
 
-                    Product.objects.select_for_update().get(
-                        id=product_id
-                    )
+                    Product.objects.select_for_update().get(id=product_id)
 
                 return "lock_acquired"
 

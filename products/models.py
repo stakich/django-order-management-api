@@ -2,8 +2,6 @@ from django.db import models
 from django.db.models import Q
 
 
-
-
 class Product(models.Model):
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True, null=True)
@@ -13,21 +11,12 @@ class Product(models.Model):
     )
     stock = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
-    category = models.ForeignKey(
-        to='Category',
-        on_delete=models.PROTECT
-    )
+    category = models.ForeignKey(to="Category", on_delete=models.PROTECT)
 
     class Meta:
         constraints = [
-            models.CheckConstraint(
-                condition=Q(stock__gte=0),
-                name="product_stock_gte_0"
-            )
+            models.CheckConstraint(condition=Q(stock__gte=0), name="product_stock_gte_0")
         ]
-
-
-
 
     sku = models.CharField(max_length=50, unique=True)
     is_active = models.BooleanField(default=True)
@@ -35,6 +24,7 @@ class Product(models.Model):
 
     def __str__(self):
         return self.name
+
 
 class Category(models.Model):
     name = models.CharField(max_length=100)
@@ -44,10 +34,9 @@ class Category(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-
     def __str__(self):
         return self.name
 
     class Meta:
-        ordering = ('name', )
+        ordering = ("name",)
         verbose_name_plural = "Categories"

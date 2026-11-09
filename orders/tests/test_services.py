@@ -1,31 +1,22 @@
-from django.test import TestCase
-from django.contrib.auth import get_user_model
 from decimal import Decimal
 from unittest.mock import patch
-from django.db import DatabaseError
-from django.db import transaction
 
-
+from django.contrib.auth import get_user_model
+from django.db import DatabaseError, transaction
+from django.test import TestCase
 
 from orders.models import Order, OrderItem
 from orders.services import OrderService
-from products.models import Product, Category
+from products.models import Category, Product
 
 User = get_user_model()
 
 
 class OrderServiceTests(TestCase):
-
     def setUp(self):
-        self.user = User.objects.create_user(
-            username="testcustomer",
-            password="testpassword123"
-        )
+        self.user = User.objects.create_user(username="testcustomer", password="testpassword123")
 
-        self.category = Category.objects.create(
-            name="Electronics",
-            slug="electronics"
-        )
+        self.category = Category.objects.create(name="Electronics", slug="electronics")
 
         self.product = Product.objects.create(
             name="Laptop",
@@ -34,18 +25,12 @@ class OrderServiceTests(TestCase):
             price="1200.00",
             stock=10,
             category=self.category,
-            is_active=True
+            is_active=True,
         )
 
     def test_create_order_successfully(self):
         order = OrderService.create_order(
-            user=self.user,
-            items=[
-                {
-                    "product": self.product.id,
-                    "quantity": 2
-                }
-            ]
+            user=self.user, items=[{"product": self.product.id, "quantity": 2}]
         )
 
         self.assertEqual(order.status, Order.Status.PENDING)
@@ -71,10 +56,7 @@ class OrderServiceTests(TestCase):
                 order = Order.objects.create(user=self.user)
 
                 OrderItem.objects.create(
-                    order=order,
-                    product=self.product,
-                    quantity=2,
-                    unit_price=self.product.price
+                    order=order, product=self.product, quantity=2, unit_price=self.product.price
                 )
 
                 self.product.stock -= 2
@@ -92,18 +74,12 @@ class OrderServiceTests(TestCase):
         initial_stock = self.product.stock
 
         with patch(
-                "orders.services.OrderItem.objects.create",
-                side_effect=DatabaseError("Simulated failure")
+            "orders.services.OrderItem.objects.create",
+            side_effect=DatabaseError("Simulated failure"),
         ):
             with self.assertRaises(DatabaseError):
                 OrderService.create_order(
-                    user=self.user,
-                    items=[
-                        {
-                            "product": self.product.id,
-                            "quantity": 2
-                        }
-                    ]
+                    user=self.user, items=[{"product": self.product.id, "quantity": 2}]
                 )
 
         self.product.refresh_from_db()

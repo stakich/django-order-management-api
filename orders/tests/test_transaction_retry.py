@@ -1,4 +1,3 @@
-
 from unittest.mock import Mock, patch
 
 from django.db import OperationalError
@@ -8,7 +7,6 @@ from orders.utils.transaction_retry import retry_on_serialization_failure
 
 
 class TransactionRetryTests(SimpleTestCase):
-
     @staticmethod
     def make_db_error(sqlstate):
         """
@@ -35,14 +33,9 @@ class TransactionRetryTests(SimpleTestCase):
     def test_retry_then_success(self, mock_sleep):
         serialization_error = self.make_db_error("40001")
 
-        operation = Mock(
-            side_effect=[serialization_error, "success"]
-        )
+        operation = Mock(side_effect=[serialization_error, "success"])
 
-        result = retry_on_serialization_failure(
-            operation,
-            max_attempts=3
-        )
+        result = retry_on_serialization_failure(operation, max_attempts=3)
 
         self.assertEqual(result, "success")
         self.assertEqual(operation.call_count, 2)
@@ -55,21 +48,12 @@ class TransactionRetryTests(SimpleTestCase):
         operation = Mock(side_effect=serialization_error)
 
         with self.assertRaises(OperationalError):
-            retry_on_serialization_failure(
-                operation,
-                max_attempts=3
-            )
+            retry_on_serialization_failure(operation, max_attempts=3)
 
         self.assertEqual(operation.call_count, 3)
         self.assertEqual(mock_sleep.call_count, 2)
-        self.assertEqual(
-            mock_sleep.call_args_list[0].args[0],
-            0.1
-        )
-        self.assertEqual(
-            mock_sleep.call_args_list[1].args[0],
-            0.2
-        )
+        self.assertEqual(mock_sleep.call_args_list[0].args[0], 0.1)
+        self.assertEqual(mock_sleep.call_args_list[1].args[0], 0.2)
 
     @patch("orders.utils.transaction_retry.time.sleep")
     def test_non_serialization_error(self, mock_sleep):
@@ -90,10 +74,7 @@ class TransactionRetryTests(SimpleTestCase):
                 operation = Mock()
 
                 with self.assertRaises(ValueError):
-                    retry_on_serialization_failure(
-                        operation,
-                        max_attempts=value
-                    )
+                    retry_on_serialization_failure(operation, max_attempts=value)
 
                 operation.assert_not_called()
 
@@ -102,9 +83,7 @@ class TransactionRetryTests(SimpleTestCase):
             with self.subTest(result=value):
                 operation = Mock(return_value=value)
 
-                result = retry_on_serialization_failure(
-                    operation
-                )
+                result = retry_on_serialization_failure(operation)
 
                 self.assertEqual(result, value)
                 operation.assert_called_once()
@@ -114,9 +93,6 @@ class TransactionRetryTests(SimpleTestCase):
         operation = Mock(side_effect=serialization_error)
 
         with self.assertRaises(OperationalError):
-            retry_on_serialization_failure(
-                operation,
-                max_attempts=1
-            )
+            retry_on_serialization_failure(operation, max_attempts=1)
 
         operation.assert_called_once()

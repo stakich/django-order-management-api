@@ -3,6 +3,7 @@
 Copy to payments/tests/test_concurrency.py. Run against a PostgreSQL TEST database.
 No Stripe API calls are made.
 """
+
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from threading import Barrier
@@ -12,9 +13,9 @@ from django.db import close_old_connections, connections
 from django.test import TransactionTestCase
 from stripe import StripeObject
 
+from orders.exceptions import OrderCannotBeCancelledError
 from orders.models import Order, OrderItem
 from orders.services import OrderService
-from orders.exceptions import OrderCannotBeCancelledError
 from payments.models import Payment
 from payments.services import PaymentService
 from products.models import Category, Product

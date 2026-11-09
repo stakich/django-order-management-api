@@ -1,23 +1,18 @@
-from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import UserProfile
 from django.db import transaction
+from rest_framework import serializers
 
+from .models import UserProfile
 
 User = get_user_model()
+
 
 class RegistrationSerializer(serializers.ModelSerializer):
     password_confirm = serializers.CharField(write_only=True)
 
     class Meta:
         model = User
-        fields = [
-            "id",
-            "username",
-            "email",
-            "password",
-            "password_confirm"
-        ]
+        fields = ["id", "username", "email", "password", "password_confirm"]
 
         extra_kwargs = {
             "password": {"write_only": True},
@@ -30,7 +25,7 @@ class RegistrationSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        if attrs['password'] != attrs['password_confirm']:
+        if attrs["password"] != attrs["password_confirm"]:
             raise serializers.ValidationError("Passwords do not match!")
         return attrs
 
@@ -45,12 +40,8 @@ class RegistrationSerializer(serializers.ModelSerializer):
 
         return user
 
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = [
-            "id",
-            "username",
-            "email"
-        ]
-
+        fields = ["id", "username", "email"]

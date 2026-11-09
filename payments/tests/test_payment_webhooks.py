@@ -74,9 +74,7 @@ class SuccessfulCheckoutTests(TestCase):
 
         session = self.session()
         PaymentService.handle_successful_checkout(session)
-        saved = PaymentService.save_stripe_session(
-            self.payment, SimpleNamespace(id=session["id"])
-        )
+        saved = PaymentService.save_stripe_session(self.payment, SimpleNamespace(id=session["id"]))
         self.assertEqual(saved.status, Payment.Status.SUCCEEDED)
         self.assertEqual(saved.stripe_session_id, session["id"])
 
