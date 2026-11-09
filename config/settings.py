@@ -15,8 +15,11 @@ STRIPE_SUCCESS_URL = os.environ["STRIPE_SUCCESS_URL"]
 STRIPE_CANCEL_URL = os.environ["STRIPE_CANCEL_URL"]
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
 
-ALLOWED_HOSTS = []
-
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+]
 
 # Application definition
 
