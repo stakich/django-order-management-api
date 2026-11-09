@@ -2,7 +2,9 @@ import logging
 
 import stripe
 from django.conf import settings
-from rest_framework import generics, status
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import generics, serializers, status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -22,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 class CheckoutView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: inline_serializer(
+                name="CheckoutResponse",
+                fields={
+                    "checkout_url": serializers.URLField(),
+                },
+            ),
+        },
+        description="Create or retrieve a Stripe Checkout session for an order.",
+    )
 
     def post(self, request, pk):
         try:
@@ -48,6 +63,19 @@ class CheckoutView(generics.GenericAPIView):
 class StripeWebhookView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
+
+    @extend_schema(
+        request=OpenApiTypes.OBJECT,
+        responses={
+            200: inline_serializer(
+                name="StripeWebhookResponse",
+                fields={
+                    "received": serializers.BooleanField(),
+                },
+            ),
+        },
+        description="Receive and verify Stripe webhook events.",
+    )
 
     def post(self, request):
         data = request.body
