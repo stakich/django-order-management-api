@@ -1,17 +1,13 @@
 from django.db import transaction
-from orders.models import Order, OrderItem
+
 from accounts.models import UserProfile
-from products.models import Product
+from orders.exceptions import OrderCannotBeCancelledError, OrderCreationError, OrderNotFoundError
+from orders.models import Order, OrderItem
 from payments.models import Payment
-from orders.exceptions import (
-    OrderNotFoundError,
-    OrderCannotBeCancelledError,
-    OrderCreationError
-)
+from products.models import Product
 
 
 class OrderService:
-
     @staticmethod
     def create_order(user, items):
         if not items:
@@ -34,21 +30,15 @@ class OrderService:
 
         with transaction.atomic():
             products = (
-                Product.objects.select_for_update().
-                filter(id__in=products_ids)
-                .order_by("id")
+                Product.objects.select_for_update().filter(id__in=products_ids).order_by("id")
             )
 
             products = list(products)
 
-            products_by_id = {
-                product.id: product
-                for product in products
-            }
+            products_by_id = {product.id: product for product in products}
 
             if len(products) != len(products_ids):
                 raise OrderCreationError("Some products are not available")
-
 
             for item in items:
                 product = products_by_id[item["product"]]
@@ -68,44 +58,31 @@ class OrderService:
                     order=order,
                     product=current_product,
                     quantity=item["quantity"],
-                    unit_price=current_product.price
+                    unit_price=current_product.price,
                 )
 
                 current_product.stock -= item["quantity"]
                 current_product.save(update_fields=["stock"])
-
 
             return order
 
     @staticmethod
     def cancel_order(user, order_id):
         with transaction.atomic():
-
             try:
-                order = (
-                    Order.objects
-                    .select_for_update()
-                    .get(pk=order_id)
-                )
+                order = Order.objects.select_for_update().get(pk=order_id)
             except Order.DoesNotExist as exc:
-                raise OrderNotFoundError(
-                    "Order not found"
-                ) from exc
+                raise OrderNotFoundError("Order not found") from exc
 
             is_owner = order.user_id == user.id
 
-            is_admin = UserProfile.objects.filter(
-                user=user,
-                role=UserProfile.Role.ADMIN
-            ).exists()
+            is_admin = UserProfile.objects.filter(user=user, role=UserProfile.Role.ADMIN).exists()
 
             if not is_owner and not is_admin:
                 raise OrderNotFoundError("Order not found")
 
             if order.status != Order.Status.PENDING:
-                raise OrderCannotBeCancelledError(
-                    "Only pending orders can be cancelled"
-                )
+                raise OrderCannotBeCancelledError("Only pending orders can be cancelled")
 
             has_active_payment = Payment.objects.filter(
                 order=order,
@@ -125,20 +102,15 @@ class OrderService:
 
             for item in order.items.all():
                 products_by_id[item.product_id] = (
-                        products_by_id.get(item.product_id, 0) + item.quantity
+                    products_by_id.get(item.product_id, 0) + item.quantity
                 )
 
             products = list(
-                Product.objects
-                .select_for_update()
-                .filter(id__in=products_by_id)
-                .order_by("id")
+                Product.objects.select_for_update().filter(id__in=products_by_id).order_by("id")
             )
 
             if len(products) != len(products_by_id):
-                raise OrderCannotBeCancelledError(
-                    "Some order products are unavailable"
-                )
+                raise OrderCannotBeCancelledError("Some order products are unavailable")
 
             for product in products:
                 product.stock += products_by_id[product.id]

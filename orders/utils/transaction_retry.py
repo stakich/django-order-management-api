@@ -1,14 +1,15 @@
-from django.db import OperationalError
 import time
+
+from django.db import OperationalError
+
 
 def retry_on_serialization_failure(operation, max_attempts=3):
     if type(max_attempts) is not int or max_attempts <= 0:
-        raise ValueError('max_attempts must be a positive integer')
+        raise ValueError("max_attempts must be a positive integer")
 
     for attempt in range(max_attempts):
         try:
             return operation()
-
 
         except OperationalError as exc:
             sqlstate = getattr(exc.__cause__, "sqlstate", None)

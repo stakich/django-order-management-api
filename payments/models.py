@@ -2,6 +2,7 @@ from django.db import models
 
 # Create your models here.
 
+
 class Payment(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
@@ -22,19 +23,16 @@ class Payment(models.Model):
     stripe_session_id = models.CharField(max_length=255, null=True, blank=True, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    checkout_status = models.CharField(max_length=30, default=CheckoutStatus.NOT_STARTED, choices=CheckoutStatus.choices)
-    checkout_claimed_at = models.DateTimeField(
-        null=True,
-        blank=True
+    checkout_status = models.CharField(
+        max_length=30, default=CheckoutStatus.NOT_STARTED, choices=CheckoutStatus.choices
     )
+    checkout_claimed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["order"],
-                condition=models.Q(
-                    status__in=["PENDING", "SUCCEEDED"]
-                ),
-                name="unique_active_or_succeeded_payment_per_order"
+                condition=models.Q(status__in=["PENDING", "SUCCEEDED"]),
+                name="unique_active_or_succeeded_payment_per_order",
             )
         ]

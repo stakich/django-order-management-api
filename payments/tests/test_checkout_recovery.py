@@ -8,11 +8,11 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from products.models import Product, Category
 from orders.models import Order, OrderItem
-from payments.exceptions import PaymentProviderError, PaymentNotAllowedError
+from payments.exceptions import PaymentNotAllowedError, PaymentProviderError
 from payments.models import Payment
 from payments.services import PaymentService
+from products.models import Category, Product
 
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_dummy")
@@ -20,14 +20,10 @@ class CheckoutRecoveryTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.user = get_user_model().objects.create_user(
-            username="checkout_tester",
-            password="test-password"
+            username="checkout_tester", password="test-password"
         )
 
-        cls.category = Category.objects.create(
-            name="Test Category",
-            slug="test-category"
-        )
+        cls.category = Category.objects.create(name="Test Category", slug="test-category")
 
         cls.product = Product.objects.create(
             name="Test Product",
@@ -35,16 +31,13 @@ class CheckoutRecoveryTests(TestCase):
             price=Decimal("19.99"),
             stock=10,
             category=cls.category,
-            is_active=True
+            is_active=True,
         )
 
         cls.order = Order.objects.create(user=cls.user)
 
         OrderItem.objects.create(
-            order=cls.order,
-            product=cls.product,
-            quantity=1,
-            unit_price=Decimal("19.99")
+            order=cls.order, product=cls.product, quantity=1, unit_price=Decimal("19.99")
         )
 
     def setUp(self):
@@ -73,25 +66,19 @@ class CheckoutRecoveryTests(TestCase):
             first["idempotency_key"],
             f"checkout-payment-{self.payment.id}",
         )
-        self.assertEqual(
-            first["line_items"][0]["price_data"]["unit_amount"], 1999
-        )
+        self.assertEqual(first["line_items"][0]["price_data"]["unit_amount"], 1999)
         self.assertEqual(first["metadata"]["payment_id"], str(self.payment.id))
         self.assertEqual(first["metadata"]["order_id"], str(self.order.id))
 
     @patch("payments.services.stripe.checkout.Session.create")
     def test_stripe_timeout_does_not_mark_checkout_ready(self, mock_create):
-        mock_create.side_effect = stripe.error.APIConnectionError(
-            "Simulated lost Stripe response"
-        )
+        mock_create.side_effect = stripe.error.APIConnectionError("Simulated lost Stripe response")
 
         with self.assertRaises(PaymentProviderError):
             PaymentService.create_checkout_session(self.user, self.order.id)
 
         self.payment.refresh_from_db()
-        self.assertEqual(
-            self.payment.checkout_status, Payment.CheckoutStatus.CREATING
-        )
+        self.assertEqual(self.payment.checkout_status, Payment.CheckoutStatus.CREATING)
         self.assertIsNone(self.payment.stripe_session_id)
         self.assertIsNotNone(self.payment.checkout_claimed_at)
         mock_create.assert_called_once()
@@ -113,9 +100,7 @@ class CheckoutRecoveryTests(TestCase):
 
         # Simulate a payment whose original attempt was 11 minutes ago.
         claimed_at = timezone.now() - timedelta(minutes=11)
-        Payment.objects.filter(pk=self.payment.id).update(
-            checkout_claimed_at=claimed_at
-        )
+        Payment.objects.filter(pk=self.payment.id).update(checkout_claimed_at=claimed_at)
 
         # Payment.created_at must also be within the permitted recovery window.
         url = PaymentService.create_checkout_session(self.user, self.order.id)
@@ -123,9 +108,7 @@ class CheckoutRecoveryTests(TestCase):
         self.assertEqual(url, "https://checkout.stripe.com/recovered")
         self.payment.refresh_from_db()
         self.assertEqual(self.payment.id, original_payment_id)
-        self.assertEqual(
-            self.payment.checkout_status, Payment.CheckoutStatus.READY
-        )
+        self.assertEqual(self.payment.checkout_status, Payment.CheckoutStatus.READY)
         self.assertEqual(self.payment.stripe_session_id, "cs_test_recovered")
         self.assertEqual(Payment.objects.filter(order=self.order).count(), 1)
 
@@ -139,30 +122,20 @@ class CheckoutRecoveryTests(TestCase):
         self.assertFalse(PaymentService.claim_checkout_creation(self.payment.id))
 
         self.payment.refresh_from_db()
-        self.assertEqual(
-            self.payment.checkout_status, Payment.CheckoutStatus.CREATING
-        )
+        self.assertEqual(self.payment.checkout_status, Payment.CheckoutStatus.CREATING)
         mock_create.assert_not_called()
 
     def test_retry_not_allowed_before_10_minutes(self):
         self.payment.checkout_status = Payment.CheckoutStatus.CREATING
-        self.payment.checkout_claimed_at = (
-                timezone.now() - timedelta(minutes=5)
-        )
+        self.payment.checkout_claimed_at = timezone.now() - timedelta(minutes=5)
 
-        self.assertFalse(
-            PaymentService.can_retry_checkout_creation(self.payment)
-        )
+        self.assertFalse(PaymentService.can_retry_checkout_creation(self.payment))
 
     def test_retry_allowed_after_15_minutes(self):
         self.payment.checkout_status = Payment.CheckoutStatus.CREATING
-        self.payment.checkout_claimed_at = (
-                timezone.now() - timedelta(minutes=15)
-        )
+        self.payment.checkout_claimed_at = timezone.now() - timedelta(minutes=15)
 
-        self.assertTrue(
-            PaymentService.can_retry_checkout_creation(self.payment)
-        )
+        self.assertTrue(PaymentService.can_retry_checkout_creation(self.payment))
 
     def test_retry_allowed_after_25_minutes_from_creation(self):
         now = timezone.now()
@@ -175,9 +148,7 @@ class CheckoutRecoveryTests(TestCase):
 
         self.payment.refresh_from_db()
 
-        self.assertTrue(
-            PaymentService.can_retry_checkout_creation(self.payment)
-        )
+        self.assertTrue(PaymentService.can_retry_checkout_creation(self.payment))
 
     def test_retry_not_allowed_after_23_hours(self):
         now = timezone.now()
@@ -190,20 +161,14 @@ class CheckoutRecoveryTests(TestCase):
 
         self.payment.refresh_from_db()
 
-        self.assertFalse(
-            PaymentService.can_retry_checkout_creation(self.payment)
-        )
+        self.assertFalse(PaymentService.can_retry_checkout_creation(self.payment))
 
     def test_retry_not_allowed_when_session_exists(self):
         self.payment.checkout_status = Payment.CheckoutStatus.CREATING
-        self.payment.checkout_claimed_at = (
-                timezone.now() - timedelta(minutes=15)
-        )
+        self.payment.checkout_claimed_at = timezone.now() - timedelta(minutes=15)
         self.payment.stripe_session_id = "cs_test_existing"
 
-        self.assertFalse(
-            PaymentService.can_retry_checkout_creation(self.payment)
-        )
+        self.assertFalse(PaymentService.can_retry_checkout_creation(self.payment))
 
     def prepare_stuck_payment(self):
         now = timezone.now()
@@ -236,13 +201,9 @@ class CheckoutRecoveryTests(TestCase):
     @patch("payments.services.stripe.checkout.Session.retrieve")
     def test_reconcile_open_session(self, mock_retrieve):
         self.prepare_stuck_payment()
-        mock_retrieve.return_value = self.make_recovery_session(
-            "open", "unpaid"
-        )
+        mock_retrieve.return_value = self.make_recovery_session("open", "unpaid")
 
-        PaymentService.reconcile_stuck_checkout(
-            self.payment.id, "cs_test_recovery"
-        )
+        PaymentService.reconcile_stuck_checkout(self.payment.id, "cs_test_recovery")
 
         self.payment.refresh_from_db()
 
@@ -258,13 +219,9 @@ class CheckoutRecoveryTests(TestCase):
     @patch("payments.services.stripe.checkout.Session.retrieve")
     def test_reconcile_expired_session(self, mock_retrieve):
         self.prepare_stuck_payment()
-        mock_retrieve.return_value = self.make_recovery_session(
-            "expired", "unpaid"
-        )
+        mock_retrieve.return_value = self.make_recovery_session("expired", "unpaid")
 
-        PaymentService.reconcile_stuck_checkout(
-            self.payment.id, "cs_test_recovery"
-        )
+        PaymentService.reconcile_stuck_checkout(self.payment.id, "cs_test_recovery")
 
         self.payment.refresh_from_db()
 
@@ -276,13 +233,9 @@ class CheckoutRecoveryTests(TestCase):
     @patch("payments.services.stripe.checkout.Session.retrieve")
     def test_reconcile_paid_session(self, mock_retrieve):
         self.prepare_stuck_payment()
-        mock_retrieve.return_value = self.make_recovery_session(
-            "complete", "paid"
-        )
+        mock_retrieve.return_value = self.make_recovery_session("complete", "paid")
 
-        PaymentService.reconcile_stuck_checkout(
-            self.payment.id, "cs_test_recovery"
-        )
+        PaymentService.reconcile_stuck_checkout(self.payment.id, "cs_test_recovery")
 
         self.payment.refresh_from_db()
         self.order.refresh_from_db()
@@ -293,9 +246,7 @@ class CheckoutRecoveryTests(TestCase):
     def prepare_ready_payment(self):
         self.payment.checkout_status = Payment.CheckoutStatus.READY
         self.payment.stripe_session_id = "cs_test_recovery"
-        self.payment.save(
-            update_fields=["checkout_status", "stripe_session_id"]
-        )
+        self.payment.save(update_fields=["checkout_status", "stripe_session_id"])
 
     def make_stripe_session(self, status, payment_status):
         return stripe.checkout.Session.construct_from(
@@ -317,9 +268,7 @@ class CheckoutRecoveryTests(TestCase):
     @patch("payments.services.stripe.checkout.Session.retrieve")
     def test_reconcile_successful_payment(self, mock_retrieve):
         self.prepare_ready_payment()
-        mock_retrieve.return_value = self.make_stripe_session(
-            "complete", "paid"
-        )
+        mock_retrieve.return_value = self.make_stripe_session("complete", "paid")
 
         PaymentService.reconcile_known_checkout(self.payment.id)
 
@@ -332,9 +281,7 @@ class CheckoutRecoveryTests(TestCase):
     @patch("payments.services.stripe.checkout.Session.retrieve")
     def test_reconcile_expired_payment(self, mock_retrieve):
         self.prepare_ready_payment()
-        mock_retrieve.return_value = self.make_stripe_session(
-            "expired", "unpaid"
-        )
+        mock_retrieve.return_value = self.make_stripe_session("expired", "unpaid")
 
         PaymentService.reconcile_known_checkout(self.payment.id)
 
@@ -348,9 +295,7 @@ class CheckoutRecoveryTests(TestCase):
     @patch("payments.services.stripe.checkout.Session.retrieve")
     def test_reconcile_open_payment(self, mock_retrieve):
         self.prepare_ready_payment()
-        mock_retrieve.return_value = self.make_stripe_session(
-            "open", "unpaid"
-        )
+        mock_retrieve.return_value = self.make_stripe_session("open", "unpaid")
 
         PaymentService.reconcile_known_checkout(self.payment.id)
 
@@ -386,9 +331,7 @@ class CheckoutRecoveryTests(TestCase):
     def test_existing_session_handles_stripe_error(self, mock_retrieve):
         self.payment.stripe_session_id = "cs_test_existing"
         self.payment.checkout_status = Payment.CheckoutStatus.READY
-        self.payment.save(
-            update_fields=["stripe_session_id", "checkout_status"]
-        )
+        self.payment.save(update_fields=["stripe_session_id", "checkout_status"])
 
         mock_retrieve.side_effect = stripe.error.APIConnectionError(
             "Simulated Stripe connection failure"

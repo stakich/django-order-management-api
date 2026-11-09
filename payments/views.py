@@ -1,9 +1,7 @@
 import logging
 
 import stripe
-
 from django.conf import settings
-
 from rest_framework import generics, status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -18,7 +16,6 @@ from .exceptions import (
 )
 from .models import Payment
 from .services import PaymentService
-
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +88,7 @@ class StripeWebhookView(APIView):
                 PaymentService.handle_expired_checkout(session)
 
         except Payment.DoesNotExist:
-            logger.exception(
-                "Stripe webhook: Payment not found"
-            )
+            logger.exception("Stripe webhook: Payment not found")
 
             return Response(
                 {"detail": "Payment not found yet"},
@@ -101,9 +96,7 @@ class StripeWebhookView(APIView):
             )
 
         except PaymentNotAllowedError:
-            logger.exception(
-                "Stripe webhook: Payment validation failed"
-            )
+            logger.exception("Stripe webhook: Payment validation failed")
 
             return Response(
                 {"detail": "Unable to process payment"},
