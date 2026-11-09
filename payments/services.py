@@ -101,8 +101,8 @@ class PaymentService:
                         "quantity": 1,
                     }
                 ],
-                success_url="http://localhost:8000/payment/success/",
-                cancel_url="http://localhost:8000/payment/cancel/",
+                success_url=settings.STRIPE_SUCCESS_URL,
+                cancel_url=settings.STRIPE_CANCEL_URL,
                 metadata={
                     "order_id": str(payment.order_id),
                     "payment_id": str(payment.id),
