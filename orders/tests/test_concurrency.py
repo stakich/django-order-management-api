@@ -13,6 +13,7 @@ from django.test import TransactionTestCase
 from orders.exceptions import OrderCreationError
 from orders.models import Order, OrderItem
 from products.models import Category, Product
+from orders.services import OrderService
 
 User = get_user_model()
 
@@ -35,6 +36,7 @@ class OrderConcurrencyTests(TransactionTestCase):
         )
 
     def test_two_customers_order_last_product(self):
+        product_id = self.product.id
 
         barrier = Barrier(2)
 
@@ -44,6 +46,31 @@ class OrderConcurrencyTests(TransactionTestCase):
             try:
                 barrier.wait(timeout=10)
 
+                user = User.objects.get(id=user_id)
+
+                order = OrderService.create_order(
+                    user=user,
+                    items=[
+                        {
+                            "product": product_id,
+                            "quantity": 1
+                        }
+                    ]
+                )
+
+                print(
+                    "Thread:",
+                    user_id,
+                    "Order ID:",
+                    order.id,
+                    "DB:",
+                    connection.settings_dict["NAME"],
+                    "In transaction:",
+                    connection.in_atomic_block,
+                    "Autocommit:",
+                    connection.get_autocommit(),
+                    flush=True,
+                )
 
                 return "success"
 
@@ -60,6 +87,13 @@ class OrderConcurrencyTests(TransactionTestCase):
             ]
 
             results = [future.result(timeout=15) for future in futures]
+
+        self.product.refresh_from_db()
+
+        print("Thread results:", results)
+        print("Final stock:", self.product.stock)
+        print("Orders created:", Order.objects.count())
+        print("Order items:", OrderItem.objects.count())
 
         self.assertEqual(results.count("success"), 1)
         self.assertEqual(results.count("insufficient_stock"), 1)
