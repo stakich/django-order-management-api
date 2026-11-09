@@ -12,8 +12,8 @@ from django.test import TransactionTestCase
 
 from orders.exceptions import OrderCreationError
 from orders.models import Order, OrderItem
-from products.models import Category, Product
 from orders.services import OrderService
+from products.models import Category, Product
 
 User = get_user_model()
 
