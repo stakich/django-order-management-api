@@ -2,99 +2,103 @@
 
 [![Django CI](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml/badge.svg)](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml)
 
-**A transactional e-commerce backend built with Django REST Framework**
+**A transactional e-commerce backend built with Django REST Framework.**
 
-`Django` · `Django REST Framework` · `PostgreSQL 17` · `Stripe Checkout` · `JWT` · `Docker Compose` · `GitHub Actions`
+`Python 3.14` · `Django` · `Django REST Framework` · `PostgreSQL 17` · `Stripe Checkout` · `JWT` · `Docker` · `GitHub Actions` · `GHCR`
 
-A backend project focused on **inventory consistency under concurrent requests**, **safe payment handling**, **role-based access control** and a **clean separation of business logic from HTTP code**. The whole stack (API + database) starts with one `docker compose up --build`, and every change is verified in CI against a real PostgreSQL instance.
+An API for a small online store, focused on **inventory consistency under concurrent requests**, **safe payment processing**, **role-based access control**, and **business logic separated from HTTP handlers**.
 
-[Features](#-features) · [Engineering decisions](#-key-engineering-decisions) · [Architecture](#-architecture) · [Quick start](#-quick-start-docker) · [API](#-api-overview) · [Payments](#-payments-stripe-checkout) · [Testing & CI](#-testing--ci) · [Roadmap](#-roadmap)
+[Features](#-features) · [Engineering decisions](#-key-engineering-decisions) · [Architecture](#-architecture) · [Quick start](#-quick-start-with-docker) · [API](#-api-overview) · [Payments](#-payments-stripe-checkout) · [Testing & CI](#-testing--ci) · [Roadmap](#-roadmap)
 
 ---
 
 ## ✨ Overview
 
-The API is the backend of a small online store. Customers browse products, place orders with several items, view and cancel their own orders and pay for them through Stripe Checkout. Administrators manage the catalog and can see all orders.
+Customers can browse products, create orders with multiple items, review and cancel their own orders, and pay through Stripe Checkout. Administrators manage the catalog and can access all orders.
 
-Creating an order reserves stock, cancelling a pending order restores it, and a verified Stripe webhook marks an order as paid. PostgreSQL transactions and row-level locks keep inventory and payment state consistent even when requests arrive at the same time.
+Order creation reserves stock in the same database transaction. Cancellation of an eligible pending order restores stock. Verified Stripe events update payment and order states. PostgreSQL transactions and row-level locks protect stock and payment operations against concurrent requests.
 
 ## 🔑 Key engineering decisions
 
-- **All-or-nothing orders:** order creation and stock changes run inside one `transaction.atomic()` block.
-- **Row-level locking:** `SELECT ... FOR UPDATE` on products (in a stable `id` order) when stock changes, and on the order and payment rows in a fixed *order → payment* sequence when payment state changes.
-- **Retry on serialization failures:** a helper retries order creation and cancellation that fail with PostgreSQL `SQLSTATE 40001`.
-- **Service layer:** business rules live in `OrderService` and `PaymentService`; views only handle authentication, validation and HTTP responses.
-- **Database-level safety nets:** `CHECK` constraints keep stock and item quantities non-negative, and a partial unique constraint allows only one pending or succeeded payment per order.
-- **Price snapshots:** each order item stores its `unit_price` at checkout, so later catalog changes never rewrite past orders.
-- **Untrusted payment data:** a Stripe webhook is accepted only with a valid signature, and the amount, currency, mode and metadata are re-checked against the stored payment before an order is marked as paid.
-- **Idempotent checkout:** Stripe sessions are created with an idempotency key, and webhook handling is safe to repeat.
-- **No information leaks:** orders that belong to other users return `404 Not Found` instead of revealing that they exist.
+- **Transactional orders:** order creation and stock changes run within `transaction.atomic()`.
+- **Row-level locks:** product rows are locked in stable ID order with `select_for_update()` before validating and changing stock.
+- **Serialization failure retry:** order operations can retry PostgreSQL `SQLSTATE 40001` failures.
+- **Service layer:** `OrderService` and `PaymentService` contain business rules; API views handle requests, permissions, and responses.
+- **Database constraints:** nonnegative stock and positive order-item quantities are enforced at the database level. Payment constraints protect against multiple active/succeeded payments for the same order.
+- **Price snapshots:** each `OrderItem` retains its purchase-time `unit_price`.
+- **Payment verification:** Stripe webhook signatures and payment details are validated before state transitions.
+- **Idempotency:** Stripe Checkout creation uses idempotency keys; webhook processing is designed to handle duplicate events.
+- **Ownership checks:** customers cannot access another customer's orders.
 
 ## ✅ Features
 
-**Products and categories**
-- Products with name, description, SKU, price, stock, category and active status
-- Product and category endpoints; reads are public, writes require the admin role
-- Customers see only active products; admins see all
-- Filtering by category and active status, search by name, description and SKU, ordering by price, name and creation date
-- Pagination (10 per page by default, up to 100 with `page_size`)
+### Products and categories
 
-**Accounts and authentication**
-- Registration with password confirmation, unique-email validation and Django password validators
-- JWT authentication (Simple JWT): access token valid for 30 minutes, refresh token for 1 day
-- `UserProfile` with `CUSTOMER` and `ADMIN` roles
-- `GET /api/v1/auth/me/` for the current user
+- Products with name, description, SKU, price, stock, category, and active status.
+- Product and category endpoints with public reads and administrator-only writes.
+- Filtering, search, ordering, and pagination of product lists.
 
-**Orders and inventory**
-- Create an order with one or more items
-- Reject invalid quantities, duplicate products, inactive products and insufficient stock
-- List orders and retrieve details (own orders for customers, all orders for admins)
-- Cancel a `PENDING` order and restore its stock exactly once
-- Cancellation is blocked while a payment is in progress
+### Accounts and authentication
 
-**Payments (Stripe Checkout, test mode friendly)**
-- Create a Checkout Session for an order you own and receive a `checkout_url`
-- Verified webhook processing moves the order from `PENDING` to `PAID`
-- Expired sessions are detected and a new payment attempt can be started
-- Reconciliation services for abandoned or stuck checkouts (see [Payments](#-payments-stripe-checkout))
+- Registration and login using JWT (Simple JWT).
+- Access tokens valid for 30 minutes and refresh tokens valid for one day.
+- `CUSTOMER` and `ADMIN` user-profile roles.
+- Endpoint to retrieve the authenticated user's details.
+
+### Orders and inventory
+
+- Orders containing one or multiple items.
+- Validation of product IDs, positive quantities, duplicate products, active status, and availability.
+- Customer-specific order listing/details, with administrator visibility across orders.
+- Cancellation of eligible `PENDING` orders and one-time stock restoration.
+- Prevention of cancellation while a payment is in progress.
+
+### Payments
+
+- Stripe Checkout Session creation for orders owned by the authenticated customer.
+- Signed webhook handling for payment completion and checkout expiration.
+- Idempotent checkout attempts and recovery/reconciliation helpers.
+- Amounts calculated server-side from stored order-item prices; EUR currency.
 
 ## 🏗 Architecture
 
-```
-Client (HTTP / JSON)                          Stripe
-        │                                       │  signed webhook
-        ▼                                       ▼
-Django REST Framework views  ◄──────────────────┘
-  ├─ Authentication and permissions
-  ├─ Request validation / serialization
-  └─ HTTP response and error mapping
-        │
-        ▼
-Service layer (OrderService, PaymentService)
-  ├─ Order creation / cancellation
-  ├─ Checkout creation, webhook handling, reconciliation
-  ├─ Business rule validation
-  └─ Atomic transactions and locking
-        │
-        ▼
-Django ORM → PostgreSQL 17
+```text
+Client (HTTP / JSON)                       Stripe
+        |                                     | signed webhook
+        v                                     v
+Django REST Framework views <---------------+
+  |-- Authentication and permissions
+  |-- Serialization and request validation
+  |-- HTTP responses and error handling
+        |
+        v
+Services: OrderService / PaymentService
+  |-- Business rules and state transitions
+  |-- Transactions and row-level locks
+  |-- Checkout creation and reconciliation
+        |
+        v
+Django ORM --> PostgreSQL 17
 ```
 
 ### Project structure
 
-```
+```text
 .
-├── accounts/            # Registration, JWT endpoints, user profiles, roles, permissions
-├── products/            # Product catalog and categories (filtering, search, pagination)
-├── orders/              # Orders, order items, OrderService, exceptions
-│   └── utils/           # Serialization-failure retry helper
-├── payments/            # Payment model, PaymentService, checkout and webhook views
-├── config/              # Django settings and root URL configuration
-├── .github/workflows/   # CI pipeline (tests.yml)
-├── Dockerfile           # Application image (gunicorn, non-root user)
-├── compose.yaml         # PostgreSQL + web services
-├── requirements.txt
-├── .env.example         # Example configuration (no real secrets)
+├── accounts/             # Registration, JWT, roles and permissions
+├── products/             # Product and category APIs
+├── orders/               # Orders, service layer and concurrency tests
+├── payments/             # Stripe checkout, webhooks and reconciliation
+├── config/               # Django settings and URLs
+├── .github/
+│   ├── workflows/tests.yml # CI tests, coverage and Docker publishing
+│   └── dependabot.yml    # Dependency update automation
+├── Dockerfile            # Non-root Gunicorn application image
+├── compose.yaml          # Web application and PostgreSQL
+├── pyproject.toml        # Ruff and coverage configuration
+├── requirements.txt      # Application dependencies
+├── requirements-dev.txt  # Ruff and coverage
+├── .env.example          # Environment variable template
 └── manage.py
 ```
 
@@ -102,153 +106,140 @@ Django ORM → PostgreSQL 17
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: order created, stock reserved
-    PENDING --> CANCELLED: cancel (stock restored)
-    PENDING --> PAID: verified Stripe webhook
+    [*] --> PENDING: Order created; stock reserved
+    PENDING --> CANCELLED: Cancel; stock restored
+    PENDING --> PAID: Verified successful payment
     CANCELLED --> [*]
     PAID --> [*]
 ```
 
 ### Containers
 
-| Service    | Image                   | Purpose                                                  |
-|------------|-------------------------|----------------------------------------------------------|
-| `postgres` | `postgres:17`           | Database; data persists in the `postgres_data` volume    |
-| `web`      | built from `Dockerfile` | Django API served by gunicorn; migrations run on start   |
+| Service | Implementation | Purpose |
+| --- | --- | --- |
+| `postgres` | `postgres:17` | Database with persistent `postgres_data` volume |
+| `web` | Local `Dockerfile` | Django API via Gunicorn (3 workers) |
 
-- Base image `python:3.14-slim`; dependencies are installed before the code is copied, so rebuilds benefit from layer caching.
-- The app runs as an **unprivileged user** and is served by **gunicorn** (3 workers), not the development server.
-- Static files (e.g. the Django admin) are collected at build time and served with **WhiteNoise**.
-- `web` waits for the PostgreSQL healthcheck, then applies migrations and starts.
-- PostgreSQL is published only on `127.0.0.1:5432`.
+The web container waits for PostgreSQL's healthcheck, runs migrations, and starts Gunicorn. The image is based on `python:3.14-slim`, installs dependencies before copying application code, runs as a non-root user, and collects static files at build time for WhiteNoise. PostgreSQL's published port binds to `127.0.0.1` on the host.
 
 ## 🧰 Tech stack
 
-| Layer              | Technology                                  |
-|--------------------|---------------------------------------------|
-| Language           | Python 3.14                                 |
-| Web framework      | Django 6.1                                  |
-| REST API           | Django REST Framework 3.18, django-filter   |
-| Authentication     | Simple JWT                                  |
-| Database           | PostgreSQL 17 (psycopg 3)                   |
-| Payments           | Stripe Checkout (`stripe` Python SDK)       |
-| Application server | gunicorn + WhiteNoise                       |
-| Containers         | Docker, Docker Compose                      |
-| CI                 | GitHub Actions                              |
+| Layer | Technology |
+| --- | --- |
+| Language | Python 3.14 |
+| Web framework | Django |
+| API | Django REST Framework, django-filter |
+| Authentication | Simple JWT |
+| Database | PostgreSQL 17, psycopg 3 |
+| Payments | Stripe Checkout |
+| Application server | Gunicorn, WhiteNoise |
+| Containers | Docker, Docker Compose |
+| CI | GitHub Actions, Ruff, Coverage |
+| Image registry | GitHub Container Registry (GHCR) |
+| Dependency updates | Dependabot |
 
-## 🚀 Quick start (Docker)
+## 🚀 Quick start with Docker
 
-**Prerequisites:** Docker with Docker Compose, and Git.
+**Prerequisites:** Git and Docker with the Compose plugin.
 
-### 1. Clone the project
+### 1. Clone and configure
 
 ```bash
 git clone https://github.com/stakich/django-order-management-api.git
 cd django-order-management-api
-```
-
-### 2. Configure environment variables
-
-```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set your own values. Generate a Django secret key with:
+Edit `.env` and replace the example secrets. Generate a Django secret key, for example:
 
 ```bash
 python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
 ```
 
-| Variable                | Required | Description                                                     |
-|-------------------------|----------|-----------------------------------------------------------------|
-| `DJANGO_SECRET_KEY`     | yes      | Django secret key                                               |
-| `DJANGO_DEBUG`          | no       | `True` for local development; defaults to `False`               |
-| `POSTGRES_DB`           | yes      | Database name                                                   |
-| `POSTGRES_USER`         | yes      | Database user                                                   |
-| `POSTGRES_PASSWORD`     | yes      | Database password (Compose refuses to start without it)         |
-| `POSTGRES_HOST`         | no       | Defaults to `127.0.0.1`; Compose sets it to `postgres` for `web`|
-| `POSTGRES_PORT`         | no       | Defaults to `5432`                                              |
-| `STRIPE_SECRET_KEY`     | for payments | Stripe secret key (use a test key, `sk_test_...`)           |
-| `STRIPE_WEBHOOK_SECRET` | for payments | Webhook signing secret (`whsec_...`)                        |
-| `STRIPE_SUCCESS_URL`    | yes      | Post-payment success URL setting                                |
-| `STRIPE_CANCEL_URL`     | yes      | Post-payment cancel URL setting                                 |
+| Variable | Purpose |
+| --- | --- |
+| `DJANGO_SECRET_KEY` | Django secret key; required |
+| `DJANGO_DEBUG` | `True` for local development; use `False` in production |
+| `DJANGO_ALLOWED_HOSTS` | Comma-separated permitted hostnames, e.g. `localhost,127.0.0.1` |
+| `POSTGRES_DB` | Database name |
+| `POSTGRES_USER` | Database user |
+| `POSTGRES_PASSWORD` | Database password |
+| `POSTGRES_HOST` | Database host; overridden to `postgres` by Compose |
+| `POSTGRES_PORT` | Database port, usually `5432` |
+| `STRIPE_SECRET_KEY` | Stripe API secret; use a test key locally |
+| `STRIPE_WEBHOOK_SECRET` | Signing secret for Stripe webhooks |
+| `STRIPE_SUCCESS_URL` | Redirect URL after a successful Checkout Session |
+| `STRIPE_CANCEL_URL` | Redirect URL when Checkout is cancelled |
 
-**Never commit `.env`, passwords, private keys or access tokens.**
+**Never commit `.env`, Stripe secrets, passwords, or JWTs.** `DJANGO_ALLOWED_HOSTS` should contain hostnames, not URLs with `http://` or port numbers. The Checkout success/cancel URLs are passed to Stripe from the configured environment variables; this repository does not currently implement dedicated success/cancel pages, so configure destinations that actually exist for your deployment.
 
-> `ALLOWED_HOSTS` is not configurable yet, so run with `DJANGO_DEBUG=True` locally (Django then allows `localhost` and `127.0.0.1`). See the [roadmap](#-roadmap).
-
-### 3. Build and start everything
+### 2. Start the application
 
 ```bash
 docker compose up --build
 ```
 
-This builds the image, starts PostgreSQL, waits until it is healthy, applies migrations and starts the API at `http://127.0.0.1:8000/api/v1/`.
+The API is available at `http://127.0.0.1:8000/api/v1/` when the services have started successfully. Compose waits for a healthy database and runs migrations before starting the app.
 
-### 4. Create an administrator
+### 3. Create an administrator
 
-In a second terminal, from the project folder:
+In another terminal:
 
 ```bash
 docker compose exec web python manage.py createsuperuser
 ```
 
-This gives access to the Django admin at `http://127.0.0.1:8000/admin/`, where you can add categories and products. To also use the **admin role in the API** (create products through the API, see all orders), give that user an `ADMIN` profile:
+For API-level administrator permissions, ensure the user has an `ADMIN` profile:
 
 ```bash
 docker compose exec web python manage.py shell -c "from django.contrib.auth import get_user_model; from accounts.models import UserProfile; u = get_user_model().objects.get(username='YOUR_USERNAME'); UserProfile.objects.update_or_create(user=u, defaults={'role': UserProfile.Role.ADMIN})"
 ```
 
-### Useful commands
+### Useful Docker commands
 
 ```bash
-docker compose ps                    # service status
-docker compose logs -f web           # follow application logs
-docker compose down                  # stop (data is kept)
-docker compose down -v               # stop AND delete the database volume
+docker compose ps
+docker compose logs -f web
+docker compose down          # Stop services; keep database data
+# docker compose down -v     # CAUTION: deletes database volume
 ```
 
-> Do not run `docker compose down -v` unless you intentionally want to delete the database.
-
-### Running the app on your machine (optional)
-
-Run only PostgreSQL in Docker and the application locally:
+### Run the API locally (optional)
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 docker compose up -d postgres
 python manage.py migrate
 python manage.py runserver
 ```
 
-Keep `POSTGRES_HOST=127.0.0.1` in `.env` for this mode. Inside Docker Compose the `web` service reaches the database by the service name `postgres`, which Compose sets automatically.
+Set `POSTGRES_HOST=127.0.0.1` for a Django process running on your host. Within Compose, the web container uses `postgres` as its database host.
 
 ## 📡 API overview
 
 Base URL: `http://127.0.0.1:8000/api/v1/`
 
-| Method | Endpoint                          | Description                                     | Access                       |
-|--------|-----------------------------------|-------------------------------------------------|------------------------------|
-| `POST` | `/auth/register/`                 | Register a new user                             | Public                       |
-| `POST` | `/auth/login/`                    | Obtain access and refresh tokens                | Public                       |
-| `POST` | `/auth/token/refresh/`            | Get a new access token                          | Public (refresh token)       |
-| `GET`  | `/auth/me/`                       | Current user                                    | Authenticated                |
-| `GET`  | `/products/`, `/products/{id}/`   | List / retrieve products                        | Public                       |
-| `POST` `PUT` `PATCH` `DELETE` | `/products/…`      | Manage products                                 | Admin role                   |
-| `GET`  | `/categories/`, `/categories/{id}/` | List / retrieve categories                    | Public                       |
-| `POST` `PUT` `PATCH` `DELETE` | `/categories/…`    | Manage categories                               | Admin role                   |
-| `GET`  | `/orders/`                        | List own orders (all orders for admins)         | Authenticated                |
-| `POST` | `/orders/`                        | Create an order                                 | Authenticated                |
-| `GET`  | `/orders/{id}/`                   | Retrieve a permitted order                      | Authenticated                |
-| `POST` | `/orders/{id}/cancel/`            | Cancel a pending order                          | Owner or admin               |
-| `POST` | `/orders/{id}/checkout/`          | Start (or resume) Stripe Checkout for an order  | Owner                        |
-| `POST` | `/payments/stripe/webhook/`       | Stripe webhook receiver                         | Stripe signature             |
+| Method | Endpoint | Description | Access |
+| --- | --- | --- | --- |
+| `POST` | `/auth/register/` | Register | Public |
+| `POST` | `/auth/login/` | Obtain access/refresh tokens | Public |
+| `POST` | `/auth/token/refresh/` | Refresh an access token | Public with refresh token |
+| `GET` | `/auth/me/` | Current user | Authenticated |
+| `GET` | `/products/`, `/products/{id}/` | Browse products | Public |
+| `POST`, `PUT`, `PATCH`, `DELETE` | `/products/…` | Manage products | Admin |
+| `GET` | `/categories/`, `/categories/{id}/` | Browse categories | Public |
+| `POST`, `PUT`, `PATCH`, `DELETE` | `/categories/…` | Manage categories | Admin |
+| `GET`, `POST` | `/orders/` | List/create orders | Authenticated |
+| `GET` | `/orders/{id}/` | Retrieve an order | Owner or admin |
+| `POST` | `/orders/{id}/cancel/` | Cancel an eligible order | Authorized user |
+| `POST` | `/orders/{id}/checkout/` | Create or resume Stripe Checkout | Owner |
+| `POST` | `/payments/stripe/webhook/` | Receive Stripe events | Valid Stripe signature |
 
-Product lists support `?category=`, `?is_active=`, `?search=`, `?ordering=price` (also `name`, `created_at`), `?page=` and `?page_size=`.
+Product listing supports category/active filtering, search, ordering, and pagination.
 
-### Example: register and log in
+### Authentication example
 
 ```bash
 curl -i -X POST http://127.0.0.1:8000/api/v1/auth/register/ \
@@ -260,145 +251,159 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/login/ \
   -d '{"username":"alice","password":"a-Strong-pass-123"}'
 ```
 
-Store the returned `access` token in your shell without printing it:
+Do not share access tokens in logs or screenshots. To use one in later examples:
 
 ```bash
 read -rsp 'JWT access token: ' ACCESS_TOKEN; echo
 ```
 
-Access tokens expire after 30 minutes; log in again (or use the refresh endpoint) if you receive `401`.
-
-### Example: create an order
-
-The item field is named `product` (not `product_id`):
+### Create an order
 
 ```bash
 curl -i -X POST http://127.0.0.1:8000/api/v1/orders/ \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"items": [{"product": 1, "quantity": 2}, {"product": 2, "quantity": 3}]}'
+  -d '{"items":[{"product":1,"quantity":2},{"product":2,"quantity":3}]}'
 ```
 
-Expected: `201 Created`, a new `PENDING` order and reduced stock.
+An accepted order begins in `PENDING` with stock reserved. Product IDs and quantities must be valid and sufficient stock must exist.
 
-### Example: cancel an order
+### Cancel an order
 
 ```bash
 curl -i -X POST http://127.0.0.1:8000/api/v1/orders/2/cancel/ \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-Expected: `200 OK` with `"status": "CANCELLED"` and the stock restored. Cancelling the same order again returns `400` and does **not** restore stock a second time.
-
-### Common errors
-
-| Status                    | Meaning                                                                         |
-|---------------------------|---------------------------------------------------------------------------------|
-| `400 Bad Request`         | Invalid order data, or the order cannot be cancelled / paid in its current state |
-| `401 Unauthorized`        | Missing, invalid or expired JWT                                                 |
-| `404 Not Found`           | The order does not exist or is not accessible to the user                       |
-| `503 Service Unavailable` | The payment provider could not be reached while creating a checkout session     |
+An eligible pending order can be cancelled once. Repeating cancellation must not restore stock again.
 
 ## 💳 Payments (Stripe Checkout)
 
-Payments are charged in **EUR**. The amount is always calculated on the server from the stored order items, never taken from the client.
+Payments are denominated in **EUR** and calculated from order items on the server.
 
-1. `POST /orders/{id}/checkout/` verifies that the order belongs to the caller, is `PENDING` and has no successful payment, then creates (or reuses) a `Payment`.
-2. The checkout attempt is *claimed* under row locks, a Stripe Checkout Session is created with an idempotency key, and the session id is saved. The response contains `checkout_url`.
-3. While a payment is in progress the order cannot be cancelled.
-4. Stripe calls `POST /payments/stripe/webhook/`. The signature is verified, then `checkout.session.completed` / `checkout.session.async_payment_succeeded` mark the payment `SUCCEEDED` and the order `PAID`, and `checkout.session.expired` marks the checkout as expired.
-5. If a session expired, calling checkout again confirms with Stripe that it is expired and unpaid, marks the old payment `FAILED` and starts a fresh attempt.
+1. The authenticated owner calls `POST /orders/{id}/checkout/` for a `PENDING` order.
+2. `PaymentService` claims the attempt under row locks and creates a Stripe Checkout Session with an idempotency key.
+3. Stripe receives the success and cancel redirect URLs from `STRIPE_SUCCESS_URL` and `STRIPE_CANCEL_URL`.
+4. Stripe sends a signed webhook. After verifying the signature, session details, and matching payment data, successful events mark the payment `SUCCEEDED` and order `PAID`.
+5. Checkout expiration and interrupted creation are handled through the existing recovery and reconciliation service helpers.
 
-If a webhook arrives before the payment can be found, the endpoint answers `503` so that Stripe retries it.
+An order with an active checkout cannot be cancelled. The reconciliation helpers (`reconcile_known_checkout`, `reconcile_stuck_checkout`) exist, but **automated periodic reconciliation is not yet configured**.
 
-`PaymentService` also contains reconciliation helpers (`reconcile_known_checkout`, `reconcile_stuck_checkout`) that re-verify a session directly with Stripe and recover abandoned checkout attempts. They are covered by tests; running them on a schedule is on the [roadmap](#-roadmap).
+### Local Stripe testing
 
-### Trying it locally (optional)
-
-With a Stripe test key in `STRIPE_SECRET_KEY`, forward webhooks with the [Stripe CLI](https://docs.stripe.com/stripe-cli):
+Use Stripe test-mode credentials and forward webhooks to the app:
 
 ```bash
 stripe listen --forward-to localhost:8000/api/v1/payments/stripe/webhook/
 ```
 
-Put the printed `whsec_...` value into `STRIPE_WEBHOOK_SECRET` in `.env` and restart the `web` service.
+Set `STRIPE_WEBHOOK_SECRET` to the signing secret printed by the Stripe CLI and restart the application. A complete end-to-end test requires a real test-mode Checkout Session and its associated webhook; a generic synthetic event may not contain the metadata expected by the application.
 
 ## 📏 Business rules
 
-1. A new order starts as `PENDING`.
-2. An order must contain at least one item with a positive integer quantity.
-3. The same product cannot appear twice in one order.
-4. Products must be active and have enough stock.
-5. Stock changes and order creation happen in one database transaction.
-6. Customers see and cancel only their own orders; administrators have broader access.
-7. Only `PENDING` orders can be cancelled, and cancellation restores each quantity exactly once.
-8. An order with a payment in progress cannot be cancelled.
-9. Order item prices are snapshots of the price at checkout.
-10. Only the owner can pay for an order, and an order can have at most one pending or succeeded payment.
-11. An order is marked `PAID` only after a signed Stripe event whose amount, currency, mode and metadata match the stored payment.
+1. New orders start in `PENDING` and must contain at least one valid item.
+2. Quantities are positive integers; duplicate product entries are rejected.
+3. Products must exist, be active, and have enough stock.
+4. Order creation and stock reservation are atomic.
+5. Order item prices are snapshots at the moment of purchase.
+6. Only eligible pending orders can be cancelled; stock is restored only once.
+7. Active payments block cancellation.
+8. Payment success requires a verified, matching Stripe event.
+9. Authorization limits customer access to their own orders.
 
 ## 🧪 Testing & CI
 
-The project has **61 automated tests** across accounts, catalog, orders and payments. Several of them use real database transactions and threads to check concurrent behaviour:
+The repository contains tests for authentication, catalog APIs, order creation/cancellation, concurrency, checkout behavior, webhook verification, and recovery. Some tests require PostgreSQL transaction semantics and row-level locking.
 
-| Area                 | What is covered                                                                      |
-|----------------------|--------------------------------------------------------------------------------------|
-| Accounts             | Registration and authentication API                                                  |
-| Catalog              | Catalog API                                                                          |
-| Orders               | Order services, retry helper, retry behaviour at the API level                       |
-| Order concurrency    | Two customers ordering the last unit (exactly one succeeds); row lock blocks a second transaction |
-| Payments             | Checkout contract, webhook handling, checkout recovery, concurrent payment attempts  |
+Run tests locally:
 
-Run the tests inside the running stack:
+```bash
+python manage.py test -v 2
+```
+
+Install development tools and check code style and test coverage:
+
+```bash
+python -m pip install -r requirements-dev.txt
+ruff check .
+coverage run manage.py test -v 2
+coverage report
+coverage html                # Optional detailed HTML report in htmlcov/
+```
+
+Or run Django tests inside the Compose application container:
 
 ```bash
 docker compose exec web python manage.py test -v 2
 ```
 
-The **Django CI** workflow (`.github/workflows/tests.yml`) runs on every pull request and on pushes to `main`. It starts a PostgreSQL 17 service container and executes:
+The [GitHub Actions workflow](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml) runs on pull requests and pushes to `main`. Its **tests** job uses PostgreSQL 17 and executes:
 
-1. `python manage.py check` — validates the Django configuration
-2. `python manage.py makemigrations --check --dry-run` — fails if a model change is missing a migration
-3. `python manage.py test -v 2` — runs the whole test suite
+1. Ruff linting (`ruff check .`).
+2. Django system checks (`python manage.py check`).
+3. Migration consistency (`python manage.py makemigrations --check --dry-run`).
+4. The test suite with Coverage (`coverage run manage.py test -v 2` followed by `coverage report`).
 
-Tests run against PostgreSQL (not SQLite) so that transactions and row-level locking behave as they do in the real environment, and they need no Stripe credentials.
+The **Docker Build & Publish** job depends on the tests job:
+
+- On pull requests, it builds the image but does not push it.
+- On a push to `main`, it builds and publishes the image to GitHub Container Registry (GHCR).
+- The published image receives both `latest` and commit-SHA tags.
+- Buildx caching is enabled to speed up subsequent builds.
+
+### Pull the published image
+
+```bash
+docker pull ghcr.io/stakich/django-order-management-api:latest
+```
+
+For reproducible deployments, prefer an immutable commit-SHA tag rather than `latest`. The registry stores images; it does **not** host or run the application. Running the image still requires the appropriate environment variables and access to PostgreSQL. Private GHCR packages require authentication with suitable read permissions.
+
+### Dependency maintenance
+
+[Dependabot](https://github.com/stakich/django-order-management-api/network/updates) is configured in `.github/dependabot.yml` to check for updates **weekly** for:
+
+- Python dependencies (`pip`).
+- GitHub Actions.
+- Docker base images.
+
+Updates are proposed as pull requests for review and CI verification; they are not automatically assumed safe or merged.
 
 ## 🛡 Security notes
 
-- Credentials, the Django secret key and Stripe keys are read from environment variables; `.env` is excluded from Git and from the Docker build context.
-- JWT is required for order and payment endpoints; ownership checks prevent access to other users' orders.
-- Stripe webhooks are verified with the signing secret; payment details are re-validated server-side.
-- Failed business operations are rolled back with database transactions.
-- The container runs as a non-root user, and PostgreSQL is bound to `127.0.0.1` only.
-- `DJANGO_DEBUG=True` is for local development only.
+- Secrets come from environment variables; `.env` is ignored by Git and the Docker build context.
+- `DJANGO_ALLOWED_HOSTS` restricts accepted hostnames, including with `DJANGO_DEBUG=False`.
+- Customer order and payment endpoints require JWT and enforce ownership checks.
+- Stripe webhooks require valid signatures and matching payment details.
+- Database transactions and constraints protect stock/payment state.
+- The application container runs as a non-root user.
+- PostgreSQL is published only to host loopback by the local Compose configuration.
+- Production deployment requires additional environment-specific security configuration, TLS termination, and operational monitoring.
 
 ## 🗺 Roadmap
 
-**Done**
+### Implemented
 
-- [x] Products and categories with filtering, search and pagination
-- [x] Registration, JWT authentication and customer/admin roles
-- [x] Transactional order creation with inventory deduction
-- [x] Order listing, details and cancellation with stock restoration
-- [x] PostgreSQL row locking and serialization-failure retry helper
-- [x] Automated tests, including concurrency tests (61 tests)
-- [x] Payment model and payment attempt tracking
-- [x] Stripe Checkout integration (test mode)
-- [x] Verified Stripe webhooks with automatic `PENDING → PAID`
-- [x] Idempotent checkout and protection against payment/cancellation races
-- [x] Docker image and Docker Compose stack
-- [x] CI with a PostgreSQL service, migration check and tests
+- [x] Product catalog, categories, filtering, search, and pagination.
+- [x] Registration, JWT authentication, and customer/admin roles.
+- [x] Transactional order creation, cancellation, and stock handling.
+- [x] PostgreSQL row-level locking and concurrency tests.
+- [x] Stripe Checkout, signed webhooks, and checkout-recovery service helpers.
+- [x] Configurable Stripe success/cancel redirect URLs.
+- [x] Configurable `DJANGO_ALLOWED_HOSTS`.
+- [x] Dockerfile, Docker Compose, and non-root application image.
+- [x] GitHub Actions with PostgreSQL, Ruff, tests, and Coverage reporting.
+- [x] Dependabot for pip, GitHub Actions, and Docker.
+- [x] Docker image builds and publication to GHCR from `main`.
 
-**Next**
+### Next
 
-- [ ] Use `STRIPE_SUCCESS_URL` / `STRIPE_CANCEL_URL` when creating the Checkout Session (the session currently uses fixed `localhost` URLs) and serve or point to real success/cancel pages
-- [ ] Make `ALLOWED_HOSTS` configurable so the app can run with `DJANGO_DEBUG=False`
-- [ ] Run checkout reconciliation on a schedule (management command or periodic job)
-- [ ] Manage user roles in the Django admin
-- [ ] Linting (`ruff`) and coverage reporting in CI
-- [ ] Publish the Docker image from CI (GitHub Container Registry)
-- [ ] OpenAPI / Swagger documentation
-- [ ] Production deployment with a public URL
+- [ ] Complete and document an end-to-end Stripe test-mode checkout/webhook run.
+- [ ] Provide real success and cancel destinations for Stripe redirects.
+- [ ] Automate checkout reconciliation if operationally needed.
+- [ ] Improve Django admin role management.
+- [ ] Add OpenAPI / Swagger documentation.
+- [ ] Deploy the API to a production environment with a public URL, HTTPS, and appropriate operational controls.
 
 ---
 
