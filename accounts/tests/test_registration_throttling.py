@@ -1,4 +1,4 @@
-
+from django.core.cache import cache
 from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
@@ -9,6 +9,9 @@ class RegistrationThrottleTests(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
+
+    def tearDown(self):
+        cache.clear()
 
     def test_registration_is_throttled_after_three_requests(self):
         url = reverse("register")
