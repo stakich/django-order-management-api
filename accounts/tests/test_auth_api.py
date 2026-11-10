@@ -1,7 +1,8 @@
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from rest_framework import status
 from rest_framework.test import APITestCase
-from django.core.cache import cache
+
 from accounts.models import UserProfile
 
 User = get_user_model()

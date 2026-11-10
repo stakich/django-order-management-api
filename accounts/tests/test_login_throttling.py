@@ -3,7 +3,6 @@ from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
-from django.core.cache import cache
 
 
 class LoginThrottleTests(TestCase):
