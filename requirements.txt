@@ -18,3 +18,4 @@ typing_extensions==4.16.0
 urllib3==2.8.0
 gunicorn==26.2.0
 whitenoise==6.12.0
+drf-spectacular==0.30.0
