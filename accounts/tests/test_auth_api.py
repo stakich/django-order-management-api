@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -51,15 +52,20 @@ class RegistrationAPITests(APITestCase):
     def test_missing_required_fields_are_rejected(self):
         for key in ("username", "email", "password", "password_confirm"):
             with self.subTest(key=key):
+                cache.clear()
+
                 data = self.payload()
                 del data[key]
+
                 response = self.client.post(REGISTER, data, format="json")
                 self.assertEqual(response.status_code, 400)
+
         self.assertEqual(User.objects.count(), 0)
 
 
 class AuthenticationAPITests(APITestCase):
     def setUp(self):
+        cache.clear()
         self.user = User.objects.create_user(
             username="customer", email="customer@example.com", password="StrongTestPassword123!"
         )
