@@ -1,8 +1,16 @@
+from datetime import timedelta
+
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
+
+def default_order_expiration():
+    return timezone.now() + timedelta(
+        minutes=settings.ORDER_EXPIRATION_MINUTES
+    )
 
 class Order(models.Model):
     class Status(models.TextChoices):
@@ -16,6 +24,10 @@ class Order(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(
+        default=default_order_expiration,
+        db_index=True,
+    )
 
 
 class OrderItem(models.Model):

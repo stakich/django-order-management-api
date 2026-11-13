@@ -57,6 +57,9 @@ class PaymentService:
             if order.status != Order.Status.PENDING:
                 raise PaymentNotAllowedError("Only pending orders can be paid")
 
+            if order.expires_at is not None and order.expires_at <= timezone.now():
+                raise PaymentNotAllowedError("Order reservation has expired")
+
             if Payment.objects.filter(order=order, status=Payment.Status.SUCCEEDED).exists():
                 raise PaymentNotAllowedError("Order already has a successful payment")
 
@@ -215,6 +218,9 @@ class PaymentService:
 
             payment = Payment.objects.select_for_update().get(id=payment_id)
 
+            if order.expires_at is not None and order.expires_at <= timezone.now():
+                return False
+
             if order.status != Order.Status.PENDING:
                 return False
 
@@ -320,6 +326,15 @@ class PaymentService:
             stripe_session = PaymentService.create_stripe_session(payment)
 
             payment = PaymentService.save_stripe_session(payment, stripe_session)
+
+            if Order.objects.filter(
+                    pk=payment.order_id,
+                    status=Order.Status.PENDING,
+                    expires_at__lte=timezone.now(),
+            ).exists():
+                raise PaymentNotAllowedError(
+                    "Order reservation has expired"
+                )
 
             return stripe_session.url
         else:
@@ -536,6 +551,87 @@ class PaymentService:
         if status == "expired" and payment_status == "unpaid":
             return PaymentService.handle_expired_checkout(session)
 
+        if status == "complete" and payment_status == "unpaid":
+
+            intent_ref = data.get("payment_intent")
+
+            intent_id = (
+                intent_ref
+                if isinstance(intent_ref, str)
+                else intent_ref.get("id") if intent_ref else None
+            )
+
+            if intent_id:
+                try:
+                    intent = stripe.PaymentIntent.retrieve(intent_id)
+                except stripe.error.StripeError as exc:
+                    raise PaymentProviderError(
+                        "Unable to retrieve Stripe PaymentIntent"
+                    ) from exc
+
+                if (
+                        intent.id != intent_id
+                        or intent.amount != PaymentService.convert_to_cents(payment.amount)
+                        or intent.currency.upper() != payment.currency.upper()
+                ):
+                    raise PaymentNotAllowedError(
+                        "PaymentIntent does not match payment"
+                    )
+
+                if intent.status == "canceled":
+                    return PaymentService.handle_failed_async_checkout(session)
+
+            with transaction.atomic():
+                order = Order.objects.select_for_update().get(
+                    pk=payment.order_id
+                )
+
+                locked_payment = Payment.objects.select_for_update().get(
+                    pk=payment_id
+                )
+
+                if locked_payment.stripe_session_id != session.id:
+                    raise PaymentNotAllowedError(
+                        "Stripe session has changed"
+                    )
+
+                # A webhook may have completed the payment concurrently.
+                if (
+                        locked_payment.status == Payment.Status.SUCCEEDED
+                        and order.status == Order.Status.PAID
+                ):
+                    return locked_payment
+
+                # A failure webhook may already have been processed.
+                if locked_payment.status == Payment.Status.FAILED:
+                    if order.status != Order.Status.PENDING:
+                        raise PaymentNotAllowedError(
+                            "Unexpected order status for failed payment"
+                        )
+
+                    return locked_payment
+
+                if (
+                        order.status != Order.Status.PENDING
+                        or locked_payment.status != Payment.Status.PENDING
+                ):
+                    raise PaymentNotAllowedError(
+                        "Payment state has changed"
+                    )
+
+                if locked_payment.checkout_status == Payment.CheckoutStatus.CREATING:
+                    locked_payment.checkout_status = Payment.CheckoutStatus.READY
+                    locked_payment.save(
+                        update_fields=["checkout_status", "updated_at"]
+                    )
+
+                elif locked_payment.checkout_status != Payment.CheckoutStatus.READY:
+                    raise PaymentNotAllowedError(
+                        "Unexpected checkout state"
+                    )
+
+                return locked_payment
+
         if status == "open" and payment_status == "unpaid":
             payment.refresh_from_db(fields=["status", "checkout_status"])
 
@@ -546,3 +642,218 @@ class PaymentService:
                 return payment
 
         raise PaymentNotAllowedError("Stripe checkout session requires manual investigation")
+
+    @staticmethod
+    def ensure_checkout_expired(payment_id):
+        try:
+            payment = PaymentService.reconcile_known_checkout(payment_id)
+        except (PaymentNotAllowedError, PaymentProviderError):
+            return False
+
+        if payment.status != Payment.Status.PENDING:
+            return False
+
+        if payment.checkout_status == Payment.CheckoutStatus.EXPIRED:
+            return True
+
+        if payment.checkout_status != Payment.CheckoutStatus.READY:
+            return False
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+
+        try:
+            session = stripe.checkout.Session.expire(
+                payment.stripe_session_id,
+            )
+        except stripe.error.StripeError:
+            logger.warning(
+                "Unable to expire Stripe session for payment %s",
+                payment_id,
+                exc_info=True,
+            )
+            return False
+
+        if (
+            session["id"] != payment.stripe_session_id
+            or session["status"] != "expired"
+            or session["payment_status"] != "unpaid"
+        ):
+            return False
+
+        updated_payment = PaymentService.handle_expired_checkout(session)
+
+        return (
+                updated_payment.status == Payment.Status.PENDING
+                and updated_payment.checkout_status == Payment.CheckoutStatus.EXPIRED
+        )
+
+
+    @staticmethod
+    def recover_stuck_checkout(payment_id):
+        payment = Payment.objects.select_related("order").get(pk=payment_id)
+
+        # Recover only expired orders with an abandoned checkout attempt.
+        if (
+            payment.order.status != Order.Status.PENDING
+            or payment.order.expires_at is None
+            or payment.order.expires_at > timezone.now()
+            or not PaymentService.can_retry_checkout_creation(payment)
+        ):
+            return False
+
+        original_claimed_at = payment.checkout_claimed_at
+
+        # Retry with the original idempotency key and identical parameters.
+        # Never return this Checkout URL to the customer.
+        replayed_session = PaymentService.create_stripe_session(payment)
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+
+        try:
+            session = stripe.checkout.Session.retrieve(replayed_session.id)
+        except stripe.error.StripeError as exc:
+            raise PaymentProviderError(
+                "Unable to retrieve recovered Stripe session"
+            ) from exc
+
+        data = session.to_dict()
+        metadata = data.get("metadata") or {}
+
+        # Verify the recovered session belongs to this payment.
+        if (
+            data.get("id") != replayed_session.id
+            or data.get("mode") != "payment"
+            or metadata.get("payment_id") != str(payment.id)
+            or metadata.get("order_id") != str(payment.order_id)
+            or data.get("amount_total")
+            != PaymentService.convert_to_cents(payment.amount)
+            or (data.get("currency") or "").upper() != payment.currency.upper()
+            or payment.provider != "STRIPE"
+        ):
+            raise PaymentNotAllowedError(
+                "Recovered Stripe session does not match payment"
+            )
+
+        state = (data.get("status"), data.get("payment_status"))
+
+        # The payment succeeded while we were recovering it.
+        if state == ("complete", "paid"):
+            PaymentService.handle_successful_checkout(session)
+            return False
+
+        # Save the recovered session ID, even if payment is unresolved.
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(pk=payment.order_id)
+            locked_payment = Payment.objects.select_for_update().get(pk=payment_id)
+
+            if (
+                order.status != Order.Status.PENDING
+                or locked_payment.status != Payment.Status.PENDING
+                or locked_payment.checkout_status != Payment.CheckoutStatus.CREATING
+                or locked_payment.stripe_session_id is not None
+                or locked_payment.checkout_claimed_at != original_claimed_at
+            ):
+                return False
+
+            locked_payment.stripe_session_id = session.id
+
+            if state == ("open", "unpaid"):
+                locked_payment.checkout_status = Payment.CheckoutStatus.READY
+            elif state == ("expired", "unpaid"):
+                locked_payment.checkout_status = Payment.CheckoutStatus.EXPIRED
+
+            locked_payment.save(
+                update_fields=[
+                    "stripe_session_id",
+                    "checkout_status",
+                    "updated_at",
+                ]
+            )
+
+            return state in {
+                ("open", "unpaid"),
+                ("expired", "unpaid"),
+            }
+
+    @staticmethod
+    def handle_failed_async_checkout(session):
+        data = session.to_dict()
+        metadata = data.get("metadata") or {}
+        payment_id = metadata.get("payment_id")
+
+        if not payment_id:
+            raise PaymentNotAllowedError("Missing payment_id")
+
+        payment_order_id = Payment.objects.values_list(
+            "order_id", flat=True
+        ).get(pk=payment_id)
+
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(
+                pk=payment_order_id
+            )
+
+            payment = Payment.objects.select_for_update().get(
+                pk=payment_id
+            )
+
+            if (
+                    data.get("mode") != "payment"
+                    or data.get("status") != "complete"
+                    or data.get("payment_status") != "unpaid"
+                    or data.get("amount_total")
+                    != PaymentService.convert_to_cents(payment.amount)
+                    or (data.get("currency") or "").upper()
+                    != payment.currency.upper()
+                    or metadata.get("order_id") != str(order.id)
+                    or payment.provider != "STRIPE"
+                    or (
+                    payment.stripe_session_id is not None
+                    and payment.stripe_session_id != data.get("id")
+            )
+            ):
+                raise PaymentNotAllowedError("Invalid Stripe session")
+
+            # A delayed failure must never overwrite a paid order.
+            if (
+                    payment.status == Payment.Status.SUCCEEDED
+                    and order.status == Order.Status.PAID
+            ):
+                return payment
+
+            # Duplicate webhook: already processed.
+            if payment.status == Payment.Status.FAILED:
+                return payment
+
+            if (
+                    order.status != Order.Status.PENDING
+                    or payment.status != Payment.Status.PENDING
+            ):
+                raise PaymentNotAllowedError("Invalid payment state")
+
+            if payment.stripe_session_id is None:
+                if payment.checkout_status != Payment.CheckoutStatus.CREATING:
+                    raise PaymentNotAllowedError("Unexpected checkout state")
+
+                payment.stripe_session_id = data["id"]
+
+            elif payment.checkout_status not in (
+                    Payment.CheckoutStatus.CREATING,
+                    Payment.CheckoutStatus.READY,
+            ):
+                raise PaymentNotAllowedError("Unexpected checkout state")
+
+            payment.status = Payment.Status.FAILED
+            payment.checkout_status = Payment.CheckoutStatus.READY
+
+            payment.save(
+                update_fields=[
+                    "status",
+                    "checkout_status",
+                    "stripe_session_id",
+                    "updated_at",
+                ]
+            )
+
+            return payment
+

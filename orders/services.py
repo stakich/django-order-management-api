@@ -1,13 +1,43 @@
 from django.db import transaction
+from django.utils import timezone
 
 from accounts.models import UserProfile
 from orders.exceptions import OrderCannotBeCancelledError, OrderCreationError, OrderNotFoundError
 from orders.models import Order, OrderItem
+from payments.exceptions import PaymentNotAllowedError, PaymentProviderError
 from payments.models import Payment
+from payments.services import PaymentService
 from products.models import Product
 
 
 class OrderService:
+
+    @staticmethod
+    def _restore_stock(order):
+        quantities = {}
+
+        for item in order.items.all():
+            quantities[item.product_id] = (
+                    quantities.get(item.product_id, 0)
+                    + item.quantity
+            )
+
+        products = list(
+            Product.objects
+            .select_for_update()
+            .filter(id__in=quantities)
+            .order_by("id")
+        )
+
+        if len(products) != len(quantities):
+            raise OrderCannotBeCancelledError(
+                "Some order products are unavailable"
+            )
+
+        for product in products:
+            product.stock += quantities[product.id]
+            product.save(update_fields=["stock"])
+
     @staticmethod
     def create_order(user, items):
         if not items:
@@ -98,25 +128,111 @@ class OrderService:
                     "Order cannot be cancelled while payment is in progress"
                 )
 
-            products_by_id = {}
-
-            for item in order.items.all():
-                products_by_id[item.product_id] = (
-                    products_by_id.get(item.product_id, 0) + item.quantity
-                )
-
-            products = list(
-                Product.objects.select_for_update().filter(id__in=products_by_id).order_by("id")
-            )
-
-            if len(products) != len(products_by_id):
-                raise OrderCannotBeCancelledError("Some order products are unavailable")
-
-            for product in products:
-                product.stock += products_by_id[product.id]
-                product.save(update_fields=["stock"])
+            OrderService._restore_stock(order)
 
             order.status = Order.Status.CANCELLED
             order.save(update_fields=["status", "updated_at"])
 
             return order
+
+    @staticmethod
+    def expire_order(order_id):
+        try:
+            order = Order.objects.get(pk=order_id)
+        except Order.DoesNotExist as exc:
+            raise OrderNotFoundError("Order not found") from exc
+
+        if order.status != Order.Status.PENDING:
+            return False
+
+        if order.expires_at is None or order.expires_at > timezone.now():
+            return False
+
+        # Phase 1: Verify payment attempts without holding DB locks.
+        verified_payments = {}
+
+        for payment in Payment.objects.filter(order=order).order_by("id"):
+            state = (payment.status, payment.checkout_status)
+
+            if (
+                    payment.status == Payment.Status.FAILED
+                    and payment.checkout_status in (
+                    Payment.CheckoutStatus.READY,
+                    Payment.CheckoutStatus.EXPIRED,
+            )
+                    and payment.stripe_session_id
+            ):
+                verified_payments[payment.id] = state
+                continue
+
+            if (
+                    state == (Payment.Status.PENDING, Payment.CheckoutStatus.NOT_STARTED)
+                    and not payment.stripe_session_id
+            ):
+                verified_payments[payment.id] = state
+                continue
+
+            if (
+                    payment.status == Payment.Status.PENDING
+                    and payment.checkout_status == Payment.CheckoutStatus.CREATING
+                    and not payment.stripe_session_id
+            ):
+                try:
+                    PaymentService.recover_stuck_checkout(payment.id)
+                except (PaymentNotAllowedError, PaymentProviderError):
+                    return False
+
+                # Process the updated payment on the next expiration attempt.
+                return False
+
+
+            if (
+                    payment.status != Payment.Status.PENDING
+                    or payment.checkout_status not in (
+                    Payment.CheckoutStatus.READY,
+                    Payment.CheckoutStatus.EXPIRED,
+            )
+                    or not payment.stripe_session_id
+            ):
+                return False
+
+            if not PaymentService.ensure_checkout_expired(payment.id):
+                return False
+
+            verified_payments[payment.id] = (
+                Payment.Status.PENDING,
+                Payment.CheckoutStatus.EXPIRED,
+            )
+
+        # Phase 2: Recheck and update everything atomically.
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(pk=order_id)
+
+            if order.status != Order.Status.PENDING:
+                return False
+
+            if order.expires_at is None or order.expires_at > timezone.now():
+                return False
+
+            payments = list(
+                Payment.objects.select_for_update()
+                .filter(order=order)
+                .order_by("id")
+            )
+
+            if [p.id for p in payments] != list(verified_payments):
+                return False
+
+            for payment in payments:
+                if (
+                        payment.status,
+                        payment.checkout_status,
+                ) != verified_payments[payment.id]:
+                    return False
+
+            OrderService._restore_stock(order)
+
+            order.status = Order.Status.CANCELLED
+            order.save(update_fields=["status", "updated_at"])
+
+            return True

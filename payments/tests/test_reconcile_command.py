@@ -3,9 +3,10 @@ from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
 
+import stripe
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from orders.models import Order
@@ -121,3 +122,78 @@ class ReconcilePaymentsFilteringTests(TestCase):
 
         mock_reconcile.assert_called_once_with(eligible.id)
         self.assertIn("checked=1, failed=0", output.getvalue())
+
+@override_settings(STRIPE_SECRET_KEY="sk_test_dummy")
+class ReconcileMissingWebhookTests(TestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(
+            username="missing_webhook_user",
+            password="testpassword123",
+        )
+
+        self.order = Order.objects.create(user=user)
+
+        self.payment = Payment.objects.create(
+            order=self.order,
+            amount=Decimal("100.00"),
+            currency="EUR",
+            status=Payment.Status.PENDING,
+            checkout_status=Payment.CheckoutStatus.READY,
+            stripe_session_id="cs_test_missing_webhook",
+        )
+
+        Payment.objects.filter(pk=self.payment.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=20)
+        )
+
+    def make_session(self, payment_status):
+        return stripe.checkout.Session.construct_from(
+            {
+                "id": "cs_test_missing_webhook",
+                "mode": "payment",
+                "status": "complete",
+                "payment_status": payment_status,
+                "amount_total": 10000,
+                "currency": "eur",
+                "metadata": {
+                    "order_id": str(self.order.pk),
+                    "payment_id": str(self.payment.pk),
+                },
+            },
+            "sk_test_dummy",
+        )
+
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_recovers_successful_payment_without_webhook(self, retrieve):
+        retrieve.return_value = self.make_session("paid")
+
+        call_command("reconcile_payments", stdout=StringIO())
+
+        self.payment.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(
+            self.payment.status,
+            Payment.Status.SUCCEEDED,
+        )
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        retrieve.assert_called_once_with("cs_test_missing_webhook")
+
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_async_payment_remains_pending(self, retrieve):
+        retrieve.return_value = self.make_session("unpaid")
+
+        call_command("reconcile_payments", stdout=StringIO())
+
+        self.payment.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(
+            self.payment.status,
+            Payment.Status.PENDING,
+        )
+        self.assertEqual(
+            self.payment.checkout_status,
+            Payment.CheckoutStatus.READY,
+        )
+        self.assertEqual(self.order.status, Order.Status.PENDING)

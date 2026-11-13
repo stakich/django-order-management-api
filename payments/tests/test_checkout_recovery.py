@@ -347,3 +347,152 @@ class CheckoutRecoveryTests(TestCase):
             self.payment.checkout_status,
             Payment.CheckoutStatus.READY,
         )
+
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_reconcile_complete_unpaid_keeps_payment_pending(self, mock_retrieve):
+        self.prepare_ready_payment()
+
+        mock_retrieve.return_value = self.make_stripe_session(
+            "complete",
+            "unpaid",
+        )
+
+        result = PaymentService.reconcile_known_checkout(
+            self.payment.id
+        )
+
+        self.payment.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(result.id, self.payment.id)
+        self.assertEqual(self.payment.status, Payment.Status.PENDING)
+        self.assertEqual(
+            self.payment.checkout_status,
+            Payment.CheckoutStatus.READY,
+        )
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_reconcile_creating_session_with_async_payment(self, mock_retrieve):
+        self.payment.checkout_status = Payment.CheckoutStatus.CREATING
+        self.payment.stripe_session_id = "cs_test_recovery"
+        self.payment.save(
+            update_fields=["checkout_status", "stripe_session_id"]
+        )
+
+        mock_retrieve.return_value = self.make_stripe_session(
+            "complete",
+            "unpaid",
+        )
+
+        PaymentService.reconcile_known_checkout(self.payment.id)
+
+        self.payment.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.payment.status, Payment.Status.PENDING)
+        self.assertEqual(
+            self.payment.checkout_status,
+            Payment.CheckoutStatus.READY,
+        )
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+
+    @patch("payments.services.stripe.PaymentIntent.retrieve")
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_requires_payment_method_remains_pending(self, mock_session, mock_intent):
+        self.prepare_ready_payment()
+
+        session = self.make_stripe_session("complete", "unpaid")
+        session.payment_intent = "pi_test_recovery"
+
+        mock_session.return_value = session
+        mock_intent.return_value = SimpleNamespace(
+            id="pi_test_recovery",
+            status="requires_payment_method",
+            amount=1999,
+            currency="eur",
+        )
+
+        PaymentService.reconcile_known_checkout(self.payment.id)
+
+        self.payment.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.payment.status, Payment.Status.PENDING)
+        self.assertEqual(
+            self.payment.checkout_status,
+            Payment.CheckoutStatus.READY,
+        )
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+        mock_intent.assert_called_once_with("pi_test_recovery")
+
+    @patch("payments.services.stripe.PaymentIntent.retrieve")
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_processing_payment_remains_pending(self, mock_session, mock_intent):
+        self.prepare_ready_payment()
+
+        session = self.make_stripe_session("complete", "unpaid")
+        session.payment_intent = "pi_test_recovery"
+
+        mock_session.return_value = session
+        mock_intent.return_value = SimpleNamespace(
+            id="pi_test_recovery",
+            status="processing",
+            amount=1999,
+            currency="eur",
+        )
+
+        PaymentService.reconcile_known_checkout(self.payment.id)
+
+        self.payment.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.payment.status, Payment.Status.PENDING)
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+
+    @patch("payments.services.stripe.PaymentIntent.retrieve")
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_rejects_mismatched_payment_intent(self, mock_session, mock_intent):
+        self.prepare_ready_payment()
+
+        session = self.make_stripe_session("complete", "unpaid")
+        session.payment_intent = "pi_test_recovery"
+
+        mock_session.return_value = session
+        mock_intent.return_value = SimpleNamespace(
+            id="pi_test_recovery",
+            status="requires_payment_method",
+            amount=9999,
+            currency="eur",
+        )
+
+        with self.assertRaises(PaymentNotAllowedError):
+            PaymentService.reconcile_known_checkout(self.payment.id)
+
+        self.payment.refresh_from_db()
+        self.assertEqual(self.payment.status, Payment.Status.PENDING)
+
+    @patch("payments.services.stripe.PaymentIntent.retrieve")
+    @patch("payments.services.stripe.checkout.Session.retrieve")
+    def test_recovers_canceled_payment_intent(self, mock_session, mock_intent):
+        self.prepare_ready_payment()
+
+        session = self.make_stripe_session("complete", "unpaid")
+        session.payment_intent = "pi_test_recovery"
+
+        mock_session.return_value = session
+        mock_intent.return_value = SimpleNamespace(
+            id="pi_test_recovery",
+            status="canceled",
+            amount=1999,
+            currency="eur",
+        )
+
+        PaymentService.reconcile_known_checkout(self.payment.id)
+
+        self.payment.refresh_from_db()
+        self.order.refresh_from_db()
+
+        self.assertEqual(self.payment.status, Payment.Status.FAILED)
+        self.assertEqual(self.order.status, Order.Status.PENDING)
+        mock_intent.assert_called_once_with("pi_test_recovery")

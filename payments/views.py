@@ -115,6 +115,11 @@ class StripeWebhookView(APIView):
 
                 PaymentService.handle_expired_checkout(session)
 
+            elif event["type"] == "checkout.session.async_payment_failed":
+                session = event["data"]["object"]
+
+                PaymentService.handle_failed_async_checkout(session)
+
         except Payment.DoesNotExist:
             logger.exception("Stripe webhook: Payment not found")
 
