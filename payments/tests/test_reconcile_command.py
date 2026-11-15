@@ -197,3 +197,53 @@ class ReconcileMissingWebhookTests(TestCase):
             Payment.CheckoutStatus.READY,
         )
         self.assertEqual(self.order.status, Order.Status.PENDING)
+
+
+class ReconciliationThrottleTests(TestCase):
+    @patch(
+        "payments.management.commands.reconcile_payments."
+        "PaymentService.reconcile_known_checkout"
+    )
+    def test_reconciliation_respects_interval(self, mock_reconcile):
+        user = get_user_model().objects.create_user(
+            username="throttle_customer",
+            password="testpassword123",
+        )
+
+        order = Order.objects.create(user=user)
+
+        payment = Payment.objects.create(
+            order=order,
+            amount=Decimal("100.00"),
+            currency="EUR",
+            status=Payment.Status.PENDING,
+            checkout_status=Payment.CheckoutStatus.READY,
+            stripe_session_id="cs_test_throttle",
+        )
+
+        Payment.objects.filter(pk=payment.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=30)
+        )
+
+        # First execution should check the payment.
+        call_command("reconcile_payments", stdout=StringIO())
+
+        payment.refresh_from_db()
+
+        self.assertEqual(mock_reconcile.call_count, 1)
+        self.assertIsNotNone(payment.last_reconciled_at)
+
+        # Immediate second execution should skip it.
+        call_command("reconcile_payments", stdout=StringIO())
+
+        self.assertEqual(mock_reconcile.call_count, 1)
+
+        # Simulate that 16 minutes have passed.
+        Payment.objects.filter(pk=payment.pk).update(
+            last_reconciled_at=timezone.now() - timedelta(minutes=16)
+        )
+
+        # Now the payment is eligible again.
+        call_command("reconcile_payments", stdout=StringIO())
+
+        self.assertEqual(mock_reconcile.call_count, 2)
