@@ -247,4 +247,3 @@ class ReconciliationThrottleTests(TestCase):
         call_command("reconcile_payments", stdout=StringIO())
 
         self.assertEqual(mock_reconcile.call_count, 2)
-
