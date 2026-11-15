@@ -100,43 +100,63 @@ class StripeWebhookView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+
+        event_type = event["type"]
+
+        supported_events = (
+            "checkout.session.completed",
+            "checkout.session.async_payment_succeeded",
+            "checkout.session.async_payment_failed",
+            "checkout.session.expired",
+        )
+
+        if event_type not in supported_events:
+            return Response({"received": True}, status=200)
+
+        session = event["data"]["object"]
+        metadata = session.get("metadata") or {}
+        payment_id = metadata.get("payment_id") if isinstance(metadata, dict) else None
+
+        log_context = {
+            "event_id": event.get("id"),
+            "session_id": session.get("id"),
+            "payment_id": payment_id,
+            "payment_intent_id": session.get("payment_intent"),
+        }
+
+        if not payment_id:
+            logger.warning("Stripe webhook missing payment ID: %s", log_context)
+            return Response({"received": True}, status=200)
+
+        if (
+            not isinstance(payment_id, str)
+            or not payment_id.isascii()
+            or not payment_id.isdecimal()
+            or not 0 < int(payment_id) <= 9223372036854775807
+        ):
+            logger.critical("Stripe webhook invalid payment ID: %s", log_context)
+            return Response({"received": True}, status=200)
+
         try:
-            if event["type"] in (
+            if event_type in (
                 "checkout.session.completed",
                 "checkout.session.async_payment_succeeded",
             ):
-                session = event["data"]["object"]
-
-                if session["payment_status"] == "paid":
+                if session.get("payment_status") == "paid":
                     PaymentService.handle_successful_checkout(session)
 
-            elif event["type"] == "checkout.session.expired":
-                session = event["data"]["object"]
-
+            elif event_type == "checkout.session.expired":
                 PaymentService.handle_expired_checkout(session)
 
-            elif event["type"] == "checkout.session.async_payment_failed":
-                session = event["data"]["object"]
-
+            elif event_type == "checkout.session.async_payment_failed":
                 PaymentService.handle_failed_async_checkout(session)
 
-        except Payment.DoesNotExist:
-            logger.exception("Stripe webhook: Payment not found")
-
-            return Response(
-                {"detail": "Payment not found yet"},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        except (Payment.DoesNotExist, PaymentNotAllowedError):
+            logger.critical(
+                "Stripe webhook requires manual investigation: %s",
+                log_context,
+                exc_info=True,
             )
 
-        except PaymentNotAllowedError:
-            logger.exception("Stripe webhook: Payment validation failed")
+        return Response({"received": True}, status=200)
 
-            return Response(
-                {"detail": "Unable to process payment"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        return Response(
-            {"received": True},
-            status=status.HTTP_200_OK,
-        )
