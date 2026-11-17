@@ -1,4 +1,3 @@
-
 import logging
 from datetime import timedelta
 from itertools import islice
@@ -7,7 +6,6 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 from django.utils import timezone
 
-from payments.exceptions import PaymentNotAllowedError, PaymentProviderError
 from payments.models import Payment
 from payments.services import PaymentService
 
@@ -58,37 +56,35 @@ class Command(BaseCommand):
             .values_list("id", flat=True)
         )
 
+
         checked = 0
+        skipped = 0
         failed = 0
 
         for payment_id in islice(payment_ids.iterator(), limit):
-            now = timezone.now()
-            retry_cutoff = now - timedelta(minutes=minutes)
-
-            # Atomically claim this payment before contacting Stripe.
-            claimed = Payment.objects.filter(
-                Q(last_reconciled_at__isnull=True)
-                | Q(last_reconciled_at__lte=retry_cutoff),
-                pk=payment_id,
-                status=Payment.Status.PENDING,
-                provider="STRIPE",
-                checkout_status=Payment.CheckoutStatus.READY,
-                stripe_session_id__isnull=False,
-                updated_at__lte=retry_cutoff,
-            ).update(last_reconciled_at=now)
-
-            if not claimed:
-                continue
-
             try:
+                now = timezone.now()
+                retry_cutoff = now - timedelta(minutes=minutes)
+
+                claimed = Payment.objects.filter(
+                    Q(last_reconciled_at__isnull=True)
+                    | Q(last_reconciled_at__lte=retry_cutoff),
+                    pk=payment_id,
+                    status=Payment.Status.PENDING,
+                    provider="STRIPE",
+                    checkout_status=Payment.CheckoutStatus.READY,
+                    stripe_session_id__isnull=False,
+                    updated_at__lte=retry_cutoff,
+                ).update(last_reconciled_at=now)
+
+                if not claimed:
+                    skipped += 1
+                    continue
+
                 PaymentService.reconcile_known_checkout(payment_id)
                 checked += 1
 
-            except (
-                PaymentNotAllowedError,
-                PaymentProviderError,
-                Payment.DoesNotExist,
-            ):
+            except Exception:
                 failed += 1
                 logger.exception(
                     "Stripe reconciliation failed for payment %s",
@@ -96,5 +92,12 @@ class Command(BaseCommand):
                 )
 
         self.stdout.write(
-            f"Reconciliation completed: checked={checked}, failed={failed}"
+            f"Reconciliation completed: "
+            f"checked={checked}, failed={failed}, skipped={skipped}"
         )
+
+        if failed:
+            raise CommandError(
+                f"Payment reconciliation failed for {failed} payment(s)"
+            )
+

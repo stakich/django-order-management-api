@@ -21,6 +21,7 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+    image: django-order-management-api:local
 
     ports:
       - "8000:8000"
@@ -28,6 +29,30 @@ services:
       postgres:
         condition: service_healthy
     command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 45"
+
+
+  scheduler:
+    image: django-order-management-api:local
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_started
+    command:
+      - sh
+      - -c
+      - |
+        sleep 60
+        while true; do
+          python manage.py expire_orders || echo "expire_orders failed" >&2
+          python manage.py reconcile_payments --minutes 15 --limit 100 || echo "reconcile_payments failed" >&2
+          sleep 60
+        done
+  
 
 volumes:
   postgres_data:

@@ -1,7 +1,6 @@
-
 import logging
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from orders.models import Order
@@ -49,3 +48,8 @@ class Command(BaseCommand):
             f"skipped={skipped}, "
             f"failed={failed}"
         )
+
+        if failed:
+            raise CommandError(
+                f"Order expiration failed for {failed} order(s)"
+            )
