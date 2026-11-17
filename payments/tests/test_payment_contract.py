@@ -1,13 +1,17 @@
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import stripe
 from django.contrib.auth import get_user_model
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import UserProfile
 from orders.models import Order, OrderItem
+from orders.services import OrderService
 from payments.models import Payment
 from payments.services import PaymentService
 from products.models import Category, Product
@@ -138,3 +142,106 @@ class PaymentContractTests(APITestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Payment.objects.exists())
+
+
+    def test_zero_total_does_not_create_payment(self):
+        OrderItem.objects.filter(order=self.order).update(
+            unit_price=Decimal("0.00")
+        )
+        self.client.force_authenticate(self.owner)
+
+        with patch("payments.services.stripe.checkout.Session.create") as create:
+            response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Payment.objects.filter(order=self.order).exists())
+        create.assert_not_called()
+
+    def test_permanent_stripe_rejection_allows_order_expiration(self):
+        product = Product.objects.get(sku="LAP-1")
+        order = OrderService.create_order(
+            user=self.owner,
+            items=[{"product": product.id, "quantity": 1}],
+        )
+        self.client.force_authenticate(self.owner)
+
+        error = stripe.error.InvalidRequestError(
+            "Amount is below the minimum",
+            param="line_items",
+        )
+
+        with patch(
+            "payments.services.stripe.checkout.Session.create",
+            side_effect=error,
+        ):
+            response = self.client.post(
+                f"/api/v1/orders/{order.id}/checkout/"
+            )
+
+        self.assertEqual(response.status_code, 400)
+
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(
+            payment.checkout_status,
+            Payment.CheckoutStatus.NOT_STARTED,
+        )
+        self.assertIsNone(payment.checkout_claimed_at)
+        self.assertIsNone(payment.stripe_session_id)
+
+        Order.objects.filter(pk=order.pk).update(
+            expires_at=timezone.now() - timedelta(minutes=1)
+        )
+
+        self.assertTrue(OrderService.expire_order(order.id))
+        self.assertFalse(OrderService.expire_order(order.id))
+
+        order.refresh_from_db()
+        product.refresh_from_db()
+
+        self.assertEqual(order.status, Order.Status.CANCELLED)
+        self.assertEqual(product.stock, 3)
+
+    def test_connection_error_keeps_checkout_creating(self):
+        self.client.force_authenticate(self.owner)
+
+        with patch(
+            "payments.services.stripe.checkout.Session.create",
+            side_effect=stripe.error.APIConnectionError(
+                "Connection unavailable"
+            ),
+        ):
+            response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, 503)
+
+        payment = Payment.objects.get(order=self.order)
+        self.assertEqual(
+            payment.checkout_status,
+            Payment.CheckoutStatus.CREATING,
+        )
+        self.assertIsNotNone(payment.checkout_claimed_at)
+        self.assertIsNone(payment.stripe_session_id)
+
+    def test_stripe_configuration_errors_reset_checkout(self):
+        self.client.force_authenticate(self.owner)
+
+        for error_class in (
+            stripe.error.AuthenticationError,
+            stripe.error.PermissionError,
+        ):
+            with self.subTest(error=error_class.__name__):
+                with patch(
+                    "payments.services.stripe.checkout.Session.create",
+                    side_effect=error_class("Stripe configuration rejected"),
+                ):
+                    response = self.client.post(self.url)
+
+                self.assertEqual(response.status_code, 503)
+
+                payment = Payment.objects.get(order=self.order)
+                self.assertEqual(
+                    payment.checkout_status,
+                    Payment.CheckoutStatus.NOT_STARTED,
+                )
+                self.assertIsNone(payment.checkout_claimed_at)
+                self.assertIsNone(payment.stripe_session_id)
