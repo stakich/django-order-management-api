@@ -174,7 +174,7 @@ sequenceDiagram
     participant W as StripeWebhookView
     C->>V: POST /orders/{id}/checkout/
     V->>P: create_checkout_session(user, order_id)
-    P->>DB: Validate order; claim checkout in transaction
+    P->>DB: Validate order and claim checkout in transaction
     P->>S: Create or retrieve Checkout Session
     S-->>P: Session ID and checkout URL
     P->>DB: Persist session ID and checkout state
@@ -183,7 +183,7 @@ sequenceDiagram
     S->>W: Signed checkout.session event
     W->>W: Verify Stripe-Signature
     W->>P: Handle supported event
-    P->>DB: Validate session; lock rows; update states atomically
+    P->>DB: Validate session and update states under row locks
     W-->>S: 200 {received: true}
 ```
 
