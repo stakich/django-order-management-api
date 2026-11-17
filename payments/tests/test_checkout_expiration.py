@@ -1,4 +1,3 @@
-
 from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
@@ -12,9 +11,7 @@ class CheckoutExpirationTests(SimpleTestCase):
     @patch("payments.services.PaymentService.handle_expired_checkout")
     @patch("payments.services.stripe.checkout.Session.expire")
     @patch("payments.services.PaymentService.reconcile_known_checkout")
-    def test_open_checkout_is_expired(
-        self, reconcile, stripe_expire, handle_expired
-    ):
+    def test_open_checkout_is_expired(self, reconcile, stripe_expire, handle_expired):
         reconcile.return_value = Mock(
             status=Payment.Status.PENDING,
             checkout_status=Payment.CheckoutStatus.READY,
@@ -53,12 +50,8 @@ class CheckoutExpirationTests(SimpleTestCase):
 
     @patch("payments.services.stripe.checkout.Session.expire")
     @patch("payments.services.PaymentService.reconcile_known_checkout")
-    def test_stripe_unavailable_keeps_reservation(
-        self, reconcile, stripe_expire
-    ):
-        reconcile.side_effect = PaymentProviderError(
-            "Stripe unavailable"
-        )
+    def test_stripe_unavailable_keeps_reservation(self, reconcile, stripe_expire):
+        reconcile.side_effect = PaymentProviderError("Stripe unavailable")
 
         result = PaymentService.ensure_checkout_expired(1)
 

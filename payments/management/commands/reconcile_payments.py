@@ -38,10 +38,7 @@ class Command(BaseCommand):
 
         cutoff = timezone.now() - timedelta(minutes=minutes)
 
-        eligible = (
-            Q(last_reconciled_at__isnull=True)
-            | Q(last_reconciled_at__lte=cutoff)
-        )
+        eligible = Q(last_reconciled_at__isnull=True) | Q(last_reconciled_at__lte=cutoff)
 
         payment_ids = (
             Payment.objects.filter(
@@ -56,7 +53,6 @@ class Command(BaseCommand):
             .values_list("id", flat=True)
         )
 
-
         checked = 0
         skipped = 0
         failed = 0
@@ -67,8 +63,7 @@ class Command(BaseCommand):
                 retry_cutoff = now - timedelta(minutes=minutes)
 
                 claimed = Payment.objects.filter(
-                    Q(last_reconciled_at__isnull=True)
-                    | Q(last_reconciled_at__lte=retry_cutoff),
+                    Q(last_reconciled_at__isnull=True) | Q(last_reconciled_at__lte=retry_cutoff),
                     pk=payment_id,
                     status=Payment.Status.PENDING,
                     provider="STRIPE",
@@ -92,12 +87,8 @@ class Command(BaseCommand):
                 )
 
         self.stdout.write(
-            f"Reconciliation completed: "
-            f"checked={checked}, failed={failed}, skipped={skipped}"
+            f"Reconciliation completed: checked={checked}, failed={failed}, skipped={skipped}"
         )
 
         if failed:
-            raise CommandError(
-                f"Payment reconciliation failed for {failed} payment(s)"
-            )
-
+            raise CommandError(f"Payment reconciliation failed for {failed} payment(s)")

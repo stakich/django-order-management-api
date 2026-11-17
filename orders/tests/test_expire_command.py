@@ -1,4 +1,3 @@
-
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
@@ -104,10 +103,7 @@ class ExpireOrdersCommandTests(TestCase):
 
         self.assertEqual(self.product.stock, 5)
 
-    @patch(
-        "orders.management.commands.expire_orders."
-        "OrderService.expire_order"
-    )
+    @patch("orders.management.commands.expire_orders.OrderService.expire_order")
     def test_command_continues_after_failure(self, mock_expire):
         Order.objects.filter(pk=self.order.pk).update(
             expires_at=timezone.now() - timedelta(minutes=1)
@@ -132,8 +128,8 @@ class ExpireOrdersCommandTests(TestCase):
         output = StringIO()
 
         with self.assertLogs(
-                "orders.management.commands.expire_orders",
-                level="ERROR",
+            "orders.management.commands.expire_orders",
+            level="ERROR",
         ):
             with self.assertRaises(CommandError):
                 call_command("expire_orders", stdout=output)

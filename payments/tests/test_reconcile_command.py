@@ -52,8 +52,8 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
         output = StringIO()
 
         with self.assertLogs(
-                "payments.management.commands.reconcile_payments",
-                level="ERROR",
+            "payments.management.commands.reconcile_payments",
+            level="ERROR",
         ):
             with self.assertRaises(CommandError):
                 call_command("reconcile_payments", stdout=output)
@@ -63,14 +63,10 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
         mock_reconcile.assert_any_call(11)
         self.assertIn("checked=1, failed=1", output.getvalue())
 
-
     @patch(
-        "payments.management.commands.reconcile_payments."
-        "PaymentService.reconcile_known_checkout"
+        "payments.management.commands.reconcile_payments.PaymentService.reconcile_known_checkout"
     )
-    @patch(
-        "payments.management.commands.reconcile_payments.Payment.objects.filter"
-    )
+    @patch("payments.management.commands.reconcile_payments.Payment.objects.filter")
     def test_skips_unclaimed_payments(self, mock_filter, mock_reconcile):
         queryset = mock_filter.return_value.order_by.return_value
         queryset.values_list.return_value.iterator.return_value = iter([10, 11])
@@ -87,12 +83,9 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
         )
 
     @patch(
-        "payments.management.commands.reconcile_payments."
-        "PaymentService.reconcile_known_checkout"
+        "payments.management.commands.reconcile_payments.PaymentService.reconcile_known_checkout"
     )
-    @patch(
-        "payments.management.commands.reconcile_payments.Payment.objects.filter"
-    )
+    @patch("payments.management.commands.reconcile_payments.Payment.objects.filter")
     def test_claim_error_does_not_stop_batch(self, mock_filter, mock_reconcile):
         queryset = mock_filter.return_value.order_by.return_value
         queryset.values_list.return_value.iterator.return_value = iter([10, 11])
@@ -116,7 +109,6 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
             "checked=1, failed=1, skipped=0",
             output.getvalue(),
         )
-
 
 
 class ReconcilePaymentsFilteringTests(TestCase):
@@ -180,6 +172,7 @@ class ReconcilePaymentsFilteringTests(TestCase):
 
         mock_reconcile.assert_called_once_with(eligible.id)
         self.assertIn("checked=1, failed=0", output.getvalue())
+
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_dummy")
 class ReconcileMissingWebhookTests(TestCase):
@@ -259,8 +252,7 @@ class ReconcileMissingWebhookTests(TestCase):
 
 class ReconciliationThrottleTests(TestCase):
     @patch(
-        "payments.management.commands.reconcile_payments."
-        "PaymentService.reconcile_known_checkout"
+        "payments.management.commands.reconcile_payments.PaymentService.reconcile_known_checkout"
     )
     def test_reconciliation_respects_interval(self, mock_reconcile):
         user = get_user_model().objects.create_user(

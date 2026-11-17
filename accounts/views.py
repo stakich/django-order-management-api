@@ -22,6 +22,7 @@ class MeView(generics.RetrieveAPIView):
     def get_object(self):
         return self.request.user
 
+
 class LoginView(TokenObtainPairView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "login"

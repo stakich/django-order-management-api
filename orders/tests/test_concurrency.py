@@ -49,13 +49,7 @@ class OrderConcurrencyTests(TransactionTestCase):
                 user = User.objects.get(id=user_id)
 
                 order = OrderService.create_order(
-                    user=user,
-                    items=[
-                        {
-                            "product": product_id,
-                            "quantity": 1
-                        }
-                    ]
+                    user=user, items=[{"product": product_id, "quantity": 1}]
                 )
 
                 print(

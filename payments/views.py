@@ -40,7 +40,6 @@ class CheckoutView(generics.GenericAPIView):
         },
         description="Create or retrieve a Stripe Checkout session for an order.",
     )
-
     def post(self, request, pk):
         try:
             checkout_url = PaymentService.create_checkout_session(
@@ -79,7 +78,6 @@ class StripeWebhookView(APIView):
         },
         description="Receive and verify Stripe webhook events.",
     )
-
     def post(self, request):
         data = request.body
         header = request.headers.get("Stripe-Signature")
@@ -102,7 +100,6 @@ class StripeWebhookView(APIView):
                 {"detail": "Invalid Stripe signature"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
 
         event_type = event["type"]
 
@@ -162,4 +159,3 @@ class StripeWebhookView(APIView):
             )
 
         return Response({"received": True}, status=200)
-

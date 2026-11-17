@@ -58,15 +58,11 @@ class PaymentService:
             or data.get("mode") != "payment"
             or metadata.get("payment_id") != str(payment.id)
             or metadata.get("order_id") != str(payment.order_id)
-            or data.get("amount_total")
-            != PaymentService.convert_to_cents(payment.amount)
+            or data.get("amount_total") != PaymentService.convert_to_cents(payment.amount)
             or (data.get("currency") or "").upper() != payment.currency.upper()
             or payment.provider != STRIPE_PROVIDER
             or (expected_session_id is not None and session_id != expected_session_id)
-            or (
-                payment.stripe_session_id is not None
-                and session_id != payment.stripe_session_id
-            )
+            or (payment.stripe_session_id is not None and session_id != payment.stripe_session_id)
         ):
             raise PaymentNotAllowedError("Stripe session does not match payment")
 
@@ -174,14 +170,10 @@ class PaymentService:
                     "Checkout could not be created for this order"
                 ) from exc
 
-            raise PaymentProviderError(
-                "Stripe checkout configuration was rejected"
-            ) from exc
+            raise PaymentProviderError("Stripe checkout configuration was rejected") from exc
 
         except stripe.error.StripeError as exc:
-            raise PaymentProviderError(
-                "Unable to create Stripe checkout session"
-            ) from exc
+            raise PaymentProviderError("Unable to create Stripe checkout session") from exc
 
         return session
 
@@ -355,7 +347,7 @@ class PaymentService:
                 raise PaymentNotAllowedError(
                     "Previous payment is not confirmed as expired and unpaid"
                 )
-            with (transaction.atomic()):
+            with transaction.atomic():
                 order = Order.objects.select_for_update().get(id=payment.order_id)
 
                 locked_payment = Payment.objects.select_for_update().get(id=payment.id)
@@ -372,8 +364,10 @@ class PaymentService:
 
                 current_total = PaymentService.calculate_order_total(order)
 
-                if current_total != locked_payment.amount \
-                    or locked_payment.currency != STRIPE_CURRENCY:
+                if (
+                    current_total != locked_payment.amount
+                    or locked_payment.currency != STRIPE_CURRENCY
+                ):
                     raise PaymentNotAllowedError("Order amount or currency has changed")
 
                 locked_payment.status = Payment.Status.FAILED
@@ -398,13 +392,11 @@ class PaymentService:
             payment = PaymentService.save_stripe_session(payment, stripe_session)
 
             if Order.objects.filter(
-                    pk=payment.order_id,
-                    status=Order.Status.PENDING,
-                    expires_at__lte=timezone.now(),
+                pk=payment.order_id,
+                status=Order.Status.PENDING,
+                expires_at__lte=timezone.now(),
             ).exists():
-                raise PaymentNotAllowedError(
-                    "Order reservation has expired"
-                )
+                raise PaymentNotAllowedError("Order reservation has expired")
 
             return stripe_session.url
         else:
@@ -602,42 +594,34 @@ class PaymentService:
             intent_id = (
                 intent_ref
                 if isinstance(intent_ref, str)
-                else intent_ref.get("id") if intent_ref else None
+                else intent_ref.get("id")
+                if intent_ref
+                else None
             )
 
             if intent_id:
                 try:
                     intent = stripe.PaymentIntent.retrieve(intent_id)
                 except stripe.error.StripeError as exc:
-                    raise PaymentProviderError(
-                        "Unable to retrieve Stripe PaymentIntent"
-                    ) from exc
+                    raise PaymentProviderError("Unable to retrieve Stripe PaymentIntent") from exc
 
                 if (
                     intent.id != intent_id
                     or intent.amount != PaymentService.convert_to_cents(payment.amount)
                     or intent.currency.upper() != payment.currency.upper()
                 ):
-                    raise PaymentNotAllowedError(
-                        "PaymentIntent does not match payment"
-                    )
+                    raise PaymentNotAllowedError("PaymentIntent does not match payment")
 
                 if intent.status == "canceled":
                     return PaymentService.handle_failed_async_checkout(session)
 
             with transaction.atomic():
-                order = Order.objects.select_for_update().get(
-                    pk=payment.order_id
-                )
+                order = Order.objects.select_for_update().get(pk=payment.order_id)
 
-                locked_payment = Payment.objects.select_for_update().get(
-                    pk=payment_id
-                )
+                locked_payment = Payment.objects.select_for_update().get(pk=payment_id)
 
                 if locked_payment.stripe_session_id != session.id:
-                    raise PaymentNotAllowedError(
-                        "Stripe session has changed"
-                    )
+                    raise PaymentNotAllowedError("Stripe session has changed")
 
                 # A webhook may have completed the payment concurrently.
                 if (
@@ -649,9 +633,7 @@ class PaymentService:
                 # A failure webhook may already have been processed.
                 if locked_payment.status == Payment.Status.FAILED:
                     if order.status != Order.Status.PENDING:
-                        raise PaymentNotAllowedError(
-                            "Unexpected order status for failed payment"
-                        )
+                        raise PaymentNotAllowedError("Unexpected order status for failed payment")
 
                     return locked_payment
 
@@ -659,20 +641,14 @@ class PaymentService:
                     order.status != Order.Status.PENDING
                     or locked_payment.status != Payment.Status.PENDING
                 ):
-                    raise PaymentNotAllowedError(
-                        "Payment state has changed"
-                    )
+                    raise PaymentNotAllowedError("Payment state has changed")
 
                 if locked_payment.checkout_status == Payment.CheckoutStatus.CREATING:
                     locked_payment.checkout_status = Payment.CheckoutStatus.READY
-                    locked_payment.save(
-                        update_fields=["checkout_status", "updated_at"]
-                    )
+                    locked_payment.save(update_fields=["checkout_status", "updated_at"])
 
                 elif locked_payment.checkout_status != Payment.CheckoutStatus.READY:
-                    raise PaymentNotAllowedError(
-                        "Unexpected checkout state"
-                    )
+                    raise PaymentNotAllowedError("Unexpected checkout state")
 
                 return locked_payment
 
@@ -755,9 +731,7 @@ class PaymentService:
         try:
             session = stripe.checkout.Session.retrieve(replayed_session.id)
         except stripe.error.StripeError as exc:
-            raise PaymentProviderError(
-                "Unable to retrieve recovered Stripe session"
-            ) from exc
+            raise PaymentProviderError("Unable to retrieve recovered Stripe session") from exc
 
         data = session.to_dict()
         PaymentService._assert_session_matches(
@@ -816,18 +790,12 @@ class PaymentService:
         if not payment_id:
             raise PaymentNotAllowedError("Missing payment_id")
 
-        payment_order_id = Payment.objects.values_list(
-            "order_id", flat=True
-        ).get(pk=payment_id)
+        payment_order_id = Payment.objects.values_list("order_id", flat=True).get(pk=payment_id)
 
         with transaction.atomic():
-            order = Order.objects.select_for_update().get(
-                pk=payment_order_id
-            )
+            order = Order.objects.select_for_update().get(pk=payment_order_id)
 
-            payment = Payment.objects.select_for_update().get(
-                pk=payment_id
-            )
+            payment = Payment.objects.select_for_update().get(pk=payment_id)
 
             PaymentService._assert_session_matches(data, payment)
 
@@ -835,20 +803,14 @@ class PaymentService:
                 raise PaymentNotAllowedError("Invalid Stripe session")
 
             # A delayed failure must never overwrite a paid order.
-            if (
-                payment.status == Payment.Status.SUCCEEDED
-                and order.status == Order.Status.PAID
-            ):
+            if payment.status == Payment.Status.SUCCEEDED and order.status == Order.Status.PAID:
                 return payment
 
             # Duplicate webhook: already processed.
             if payment.status == Payment.Status.FAILED:
                 return payment
 
-            if (
-                order.status != Order.Status.PENDING
-                or payment.status != Payment.Status.PENDING
-            ):
+            if order.status != Order.Status.PENDING or payment.status != Payment.Status.PENDING:
                 raise PaymentNotAllowedError("Invalid payment state")
 
             if payment.stripe_session_id is None:

@@ -1,4 +1,3 @@
-
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -38,19 +37,21 @@ class StripeWebhookResponseTests(APITestCase):
         )
 
     def make_event(self, event_type="checkout.session.completed"):
-        session = StripeSession({
-            "id": "cs_test_webhook",
-            "mode": "payment",
-            "status": "complete",
-            "payment_status": "paid",
-            "amount_total": 1999,
-            "currency": "eur",
-            "payment_intent": "pi_test_webhook",
-            "metadata": {
-                "order_id": str(self.order.id),
-                "payment_id": str(self.payment.id),
-            },
-        })
+        session = StripeSession(
+            {
+                "id": "cs_test_webhook",
+                "mode": "payment",
+                "status": "complete",
+                "payment_status": "paid",
+                "amount_total": 1999,
+                "currency": "eur",
+                "payment_intent": "pi_test_webhook",
+                "metadata": {
+                    "order_id": str(self.order.id),
+                    "payment_id": str(self.payment.id),
+                },
+            }
+        )
 
         return {
             "id": "evt_test_webhook",
