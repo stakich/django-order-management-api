@@ -6,6 +6,8 @@ from unittest.mock import patch
 import stripe
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.db import OperationalError
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -53,12 +55,68 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
                 "payments.management.commands.reconcile_payments",
                 level="ERROR",
         ):
-            call_command("reconcile_payments", stdout=output)
+            with self.assertRaises(CommandError):
+                call_command("reconcile_payments", stdout=output)
 
         self.assertEqual(mock_reconcile.call_count, 2)
         mock_reconcile.assert_any_call(10)
         mock_reconcile.assert_any_call(11)
         self.assertIn("checked=1, failed=1", output.getvalue())
+
+
+    @patch(
+        "payments.management.commands.reconcile_payments."
+        "PaymentService.reconcile_known_checkout"
+    )
+    @patch(
+        "payments.management.commands.reconcile_payments.Payment.objects.filter"
+    )
+    def test_skips_unclaimed_payments(self, mock_filter, mock_reconcile):
+        queryset = mock_filter.return_value.order_by.return_value
+        queryset.values_list.return_value.iterator.return_value = iter([10, 11])
+
+        mock_filter.return_value.update.side_effect = [0, 1]
+
+        output = StringIO()
+        call_command("reconcile_payments", stdout=output)
+
+        mock_reconcile.assert_called_once_with(11)
+        self.assertIn(
+            "checked=1, failed=0, skipped=1",
+            output.getvalue(),
+        )
+
+    @patch(
+        "payments.management.commands.reconcile_payments."
+        "PaymentService.reconcile_known_checkout"
+    )
+    @patch(
+        "payments.management.commands.reconcile_payments.Payment.objects.filter"
+    )
+    def test_claim_error_does_not_stop_batch(self, mock_filter, mock_reconcile):
+        queryset = mock_filter.return_value.order_by.return_value
+        queryset.values_list.return_value.iterator.return_value = iter([10, 11])
+
+        mock_filter.return_value.update.side_effect = [
+            OperationalError("Database unavailable"),
+            1,
+        ]
+
+        output = StringIO()
+
+        with self.assertLogs(
+            "payments.management.commands.reconcile_payments",
+            level="ERROR",
+        ):
+            with self.assertRaises(CommandError):
+                call_command("reconcile_payments", stdout=output)
+
+        mock_reconcile.assert_called_once_with(11)
+        self.assertIn(
+            "checked=1, failed=1, skipped=0",
+            output.getvalue(),
+        )
+
 
 
 class ReconcilePaymentsFilteringTests(TestCase):

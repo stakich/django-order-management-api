@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -131,10 +132,11 @@ class ExpireOrdersCommandTests(TestCase):
         output = StringIO()
 
         with self.assertLogs(
-            "orders.management.commands.expire_orders",
-            level="ERROR",
+                "orders.management.commands.expire_orders",
+                level="ERROR",
         ):
-            call_command("expire_orders", stdout=output)
+            with self.assertRaises(CommandError):
+                call_command("expire_orders", stdout=output)
 
         self.assertEqual(mock_expire.call_count, 2)
         self.assertIn("expired=1", output.getvalue())
