@@ -1,4 +1,3 @@
-
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -50,23 +49,23 @@ class AsyncCheckoutTests(TestCase):
         )
 
     def make_session(self):
-        return StripeSession({
-            "id": "cs_test_async",
-            "mode": "payment",
-            "status": "complete",
-            "payment_status": "unpaid",
-            "amount_total": 200000,
-            "currency": "eur",
-            "metadata": {
-                "order_id": str(self.order.pk),
-                "payment_id": str(self.payment.pk),
-            },
-        })
+        return StripeSession(
+            {
+                "id": "cs_test_async",
+                "mode": "payment",
+                "status": "complete",
+                "payment_status": "unpaid",
+                "amount_total": 200000,
+                "currency": "eur",
+                "metadata": {
+                    "order_id": str(self.order.pk),
+                    "payment_id": str(self.payment.pk),
+                },
+            }
+        )
 
     def test_async_failure_marks_payment_failed(self):
-        PaymentService.handle_failed_async_checkout(
-            self.make_session()
-        )
+        PaymentService.handle_failed_async_checkout(self.make_session())
 
         self.payment.refresh_from_db()
         self.order.refresh_from_db()

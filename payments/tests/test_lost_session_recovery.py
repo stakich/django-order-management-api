@@ -1,4 +1,3 @@
-
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -128,4 +127,3 @@ class LostSessionRecoveryTests(TestCase):
 
         self.assertEqual(self.order.status, Order.Status.PENDING)
         self.assertEqual(self.product.stock, 3)
-

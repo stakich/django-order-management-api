@@ -357,9 +357,7 @@ class CheckoutRecoveryTests(TestCase):
             "unpaid",
         )
 
-        result = PaymentService.reconcile_known_checkout(
-            self.payment.id
-        )
+        result = PaymentService.reconcile_known_checkout(self.payment.id)
 
         self.payment.refresh_from_db()
         self.order.refresh_from_db()
@@ -376,9 +374,7 @@ class CheckoutRecoveryTests(TestCase):
     def test_reconcile_creating_session_with_async_payment(self, mock_retrieve):
         self.payment.checkout_status = Payment.CheckoutStatus.CREATING
         self.payment.stripe_session_id = "cs_test_recovery"
-        self.payment.save(
-            update_fields=["checkout_status", "stripe_session_id"]
-        )
+        self.payment.save(update_fields=["checkout_status", "stripe_session_id"])
 
         mock_retrieve.return_value = self.make_stripe_session(
             "complete",

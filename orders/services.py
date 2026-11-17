@@ -11,28 +11,19 @@ from products.models import Product
 
 
 class OrderService:
-
     @staticmethod
     def _restore_stock(order):
         quantities = {}
 
         for item in order.items.all():
-            quantities[item.product_id] = (
-                    quantities.get(item.product_id, 0)
-                    + item.quantity
-            )
+            quantities[item.product_id] = quantities.get(item.product_id, 0) + item.quantity
 
         products = list(
-            Product.objects
-            .select_for_update()
-            .filter(id__in=quantities)
-            .order_by("id")
+            Product.objects.select_for_update().filter(id__in=quantities).order_by("id")
         )
 
         if len(products) != len(quantities):
-            raise OrderCannotBeCancelledError(
-                "Some order products are unavailable"
-            )
+            raise OrderCannotBeCancelledError("Some order products are unavailable")
 
         for product in products:
             product.stock += quantities[product.id]
@@ -155,27 +146,28 @@ class OrderService:
             state = (payment.status, payment.checkout_status)
 
             if (
-                    payment.status == Payment.Status.FAILED
-                    and payment.checkout_status in (
+                payment.status == Payment.Status.FAILED
+                and payment.checkout_status
+                in (
                     Payment.CheckoutStatus.READY,
                     Payment.CheckoutStatus.EXPIRED,
-            )
-                    and payment.stripe_session_id
+                )
+                and payment.stripe_session_id
             ):
                 verified_payments[payment.id] = state
                 continue
 
             if (
-                    state == (Payment.Status.PENDING, Payment.CheckoutStatus.NOT_STARTED)
-                    and not payment.stripe_session_id
+                state == (Payment.Status.PENDING, Payment.CheckoutStatus.NOT_STARTED)
+                and not payment.stripe_session_id
             ):
                 verified_payments[payment.id] = state
                 continue
 
             if (
-                    payment.status == Payment.Status.PENDING
-                    and payment.checkout_status == Payment.CheckoutStatus.CREATING
-                    and not payment.stripe_session_id
+                payment.status == Payment.Status.PENDING
+                and payment.checkout_status == Payment.CheckoutStatus.CREATING
+                and not payment.stripe_session_id
             ):
                 try:
                     PaymentService.recover_stuck_checkout(payment.id)
@@ -185,14 +177,14 @@ class OrderService:
                 # Process the updated payment on the next expiration attempt.
                 return False
 
-
             if (
-                    payment.status != Payment.Status.PENDING
-                    or payment.checkout_status not in (
+                payment.status != Payment.Status.PENDING
+                or payment.checkout_status
+                not in (
                     Payment.CheckoutStatus.READY,
                     Payment.CheckoutStatus.EXPIRED,
-            )
-                    or not payment.stripe_session_id
+                )
+                or not payment.stripe_session_id
             ):
                 return False
 
@@ -214,19 +206,15 @@ class OrderService:
             if order.expires_at is None or order.expires_at > timezone.now():
                 return False
 
-            payments = list(
-                Payment.objects.select_for_update()
-                .filter(order=order)
-                .order_by("id")
-            )
+            payments = list(Payment.objects.select_for_update().filter(order=order).order_by("id"))
 
             if [p.id for p in payments] != list(verified_payments):
                 return False
 
             for payment in payments:
                 if (
-                        payment.status,
-                        payment.checkout_status,
+                    payment.status,
+                    payment.checkout_status,
                 ) != verified_payments[payment.id]:
                     return False
 

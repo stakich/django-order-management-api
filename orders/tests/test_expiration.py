@@ -36,9 +36,7 @@ class OrderExpirationTests(TestCase):
 
         self.order = OrderService.create_order(
             user=self.user,
-            items=[
-                {"product": self.product.id, "quantity": 2}
-            ],
+            items=[{"product": self.product.id, "quantity": 2}],
         )
 
     def expire_reservation(self):

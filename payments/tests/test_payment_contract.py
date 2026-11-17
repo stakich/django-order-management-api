@@ -143,11 +143,8 @@ class PaymentContractTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Payment.objects.exists())
 
-
     def test_zero_total_does_not_create_payment(self):
-        OrderItem.objects.filter(order=self.order).update(
-            unit_price=Decimal("0.00")
-        )
+        OrderItem.objects.filter(order=self.order).update(unit_price=Decimal("0.00"))
         self.client.force_authenticate(self.owner)
 
         with patch("payments.services.stripe.checkout.Session.create") as create:
@@ -174,9 +171,7 @@ class PaymentContractTests(APITestCase):
             "payments.services.stripe.checkout.Session.create",
             side_effect=error,
         ):
-            response = self.client.post(
-                f"/api/v1/orders/{order.id}/checkout/"
-            )
+            response = self.client.post(f"/api/v1/orders/{order.id}/checkout/")
 
         self.assertEqual(response.status_code, 400)
 
@@ -188,9 +183,7 @@ class PaymentContractTests(APITestCase):
         self.assertIsNone(payment.checkout_claimed_at)
         self.assertIsNone(payment.stripe_session_id)
 
-        Order.objects.filter(pk=order.pk).update(
-            expires_at=timezone.now() - timedelta(minutes=1)
-        )
+        Order.objects.filter(pk=order.pk).update(expires_at=timezone.now() - timedelta(minutes=1))
 
         self.assertTrue(OrderService.expire_order(order.id))
         self.assertFalse(OrderService.expire_order(order.id))
@@ -206,9 +199,7 @@ class PaymentContractTests(APITestCase):
 
         with patch(
             "payments.services.stripe.checkout.Session.create",
-            side_effect=stripe.error.APIConnectionError(
-                "Connection unavailable"
-            ),
+            side_effect=stripe.error.APIConnectionError("Connection unavailable"),
         ):
             response = self.client.post(self.url)
 

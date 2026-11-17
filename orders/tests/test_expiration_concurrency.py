@@ -65,17 +65,19 @@ class OrderExpirationConcurrencyTests(TransactionTestCase):
         webhook_updated = Event()
         expiration_checked = Event()
 
-        session = StripeSession({
-            "id": "cs_test_race",
-            "mode": "payment",
-            "payment_status": "paid",
-            "amount_total": 200000,
-            "currency": "eur",
-            "metadata": {
-                "order_id": str(self.order.pk),
-                "payment_id": str(self.payment.pk),
-            },
-        })
+        session = StripeSession(
+            {
+                "id": "cs_test_race",
+                "mode": "payment",
+                "payment_status": "paid",
+                "amount_total": 200000,
+                "currency": "eur",
+                "metadata": {
+                    "order_id": str(self.order.pk),
+                    "payment_id": str(self.payment.pk),
+                },
+            }
+        )
 
         def webhook():
             close_old_connections()
@@ -131,17 +133,19 @@ class OrderExpirationConcurrencyTests(TransactionTestCase):
         verification_started = Event()
         webhook_completed = Event()
 
-        session = StripeSession({
-            "id": "cs_test_race",
-            "mode": "payment",
-            "payment_status": "paid",
-            "amount_total": 200000,
-            "currency": "eur",
-            "metadata": {
-                "order_id": str(self.order.pk),
-                "payment_id": str(self.payment.pk),
-            },
-        })
+        session = StripeSession(
+            {
+                "id": "cs_test_race",
+                "mode": "payment",
+                "payment_status": "paid",
+                "amount_total": 200000,
+                "currency": "eur",
+                "metadata": {
+                    "order_id": str(self.order.pk),
+                    "payment_id": str(self.payment.pk),
+                },
+            }
+        )
 
         def fake_stripe_retrieve(session_id):
             self.assertEqual(session_id, "cs_test_race")

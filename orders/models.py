@@ -8,9 +8,8 @@ from django.utils import timezone
 
 
 def default_order_expiration():
-    return timezone.now() + timedelta(
-        minutes=settings.ORDER_EXPIRATION_MINUTES
-    )
+    return timezone.now() + timedelta(minutes=settings.ORDER_EXPIRATION_MINUTES)
+
 
 class Order(models.Model):
     class Status(models.TextChoices):

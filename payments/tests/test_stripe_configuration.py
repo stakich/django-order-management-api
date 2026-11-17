@@ -1,4 +1,3 @@
-
 from unittest.mock import patch
 
 import stripe
@@ -49,11 +48,7 @@ class StripeConfigurationTests(SimpleTestCase):
         STRIPE_WEBHOOK_SECRET="",
     )
     def test_checks_run_only_during_deployment_checks(self):
-        normal = {
-            warning.id
-            for warning in run_checks()
-            if warning.id.startswith("payments.")
-        }
+        normal = {warning.id for warning in run_checks() if warning.id.startswith("payments.")}
 
         deployment = {
             warning.id

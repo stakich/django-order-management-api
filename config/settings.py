@@ -17,9 +17,7 @@ DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
 ORDER_EXPIRATION_MINUTES = 30
 
 ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",")
-    if host.strip()
+    host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()
 ]
 
 # Application definition

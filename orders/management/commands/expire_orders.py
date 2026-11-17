@@ -43,13 +43,8 @@ class Command(BaseCommand):
                 )
 
         self.stdout.write(
-            f"Order expiration completed: "
-            f"expired={expired}, "
-            f"skipped={skipped}, "
-            f"failed={failed}"
+            f"Order expiration completed: expired={expired}, skipped={skipped}, failed={failed}"
         )
 
         if failed:
-            raise CommandError(
-                f"Order expiration failed for {failed} order(s)"
-            )
+            raise CommandError(f"Order expiration failed for {failed} order(s)")
