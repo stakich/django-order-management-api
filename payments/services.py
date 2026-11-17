@@ -65,6 +65,9 @@ class PaymentService:
 
             total = PaymentService.calculate_order_total(order)
 
+            if total <= decimal.Decimal("0.00"):
+                raise PaymentNotAllowedError("Order total must be greater than zero")
+
             payment = Payment.objects.filter(
                 order=order,
                 status=Payment.Status.PENDING,
@@ -112,8 +115,47 @@ class PaymentService:
                 },
                 idempotency_key=f"checkout-payment-{payment.id}",
             )
+
+        except (
+            stripe.error.InvalidRequestError,
+            stripe.error.AuthenticationError,
+            stripe.error.PermissionError,
+        ) as exc:
+            # Stripe definitively rejected the request.
+            # Restore the checkout state without holding locks during the API call.
+            with transaction.atomic():
+                Order.objects.select_for_update().get(pk=payment.order_id)
+                locked_payment = Payment.objects.select_for_update().get(pk=payment.id)
+
+                if (
+                    locked_payment.status == Payment.Status.PENDING
+                    and locked_payment.checkout_status == Payment.CheckoutStatus.CREATING
+                    and locked_payment.stripe_session_id is None
+                ):
+                    locked_payment.checkout_status = Payment.CheckoutStatus.NOT_STARTED
+                    locked_payment.checkout_claimed_at = None
+                    locked_payment.save(
+                        update_fields=[
+                            "checkout_status",
+                            "checkout_claimed_at",
+                            "updated_at",
+                        ]
+                    )
+
+            if isinstance(exc, stripe.error.InvalidRequestError):
+                raise PaymentNotAllowedError(
+                    "Checkout could not be created for this order"
+                ) from exc
+
+            raise PaymentProviderError(
+                "Stripe checkout configuration was rejected"
+            ) from exc
+
         except stripe.error.StripeError as exc:
-            raise PaymentProviderError("Unable to create Stripe checkout session") from exc
+            raise PaymentProviderError(
+                "Unable to create Stripe checkout session"
+            ) from exc
+
         return session
 
     @staticmethod
