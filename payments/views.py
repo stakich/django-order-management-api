@@ -8,6 +8,7 @@ from rest_framework import generics, serializers, status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .exceptions import (
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 class CheckoutView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "checkout"
 
     @extend_schema(
         request=None,
