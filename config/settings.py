@@ -1,6 +1,8 @@
 import os
 from datetime import timedelta
 from pathlib import Path
+from django.conf import settings
+from django.conf.urls.static import static
 
 from dotenv import load_dotenv
 
@@ -144,6 +146,9 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration

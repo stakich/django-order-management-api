@@ -11,7 +11,7 @@ from .serializers import CategorySerializer, ProductSerializer
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.all().order_by("id")
+    queryset = Product.objects.select_related("category").order_by("id")
     serializer_class = ProductSerializer
     pagination_class = CustomPagination
     permission_classes = [IsAdminOrReadOnly]
@@ -28,10 +28,11 @@ class ProductViewSet(viewsets.ModelViewSet):
         if user.is_authenticated:
             is_admin = UserProfile.objects.filter(user=user, role=UserProfile.Role.ADMIN).exists()
 
+        queryset = Product.objects.select_related("category").order_by("id")
         if is_admin:
-            return Product.objects.all().order_by("id")
+            return queryset
 
-        return Product.objects.filter(is_active=True).order_by("id")
+        return queryset.filter(is_active=True)
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
