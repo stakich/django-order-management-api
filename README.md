@@ -1,23 +1,28 @@
-# Order Management API
+# Order Management Platform — Django API & React Storefront
 
 [![CI](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml/badge.svg)](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Django](https://img.shields.io/badge/Django-6.1-092E20?logo=django&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-Frontend-3178C6?logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-Frontend-646CFF?logo=vite&logoColor=white)
 
-**A transaction-safe e-commerce REST API built with Django REST Framework, PostgreSQL and Stripe Checkout.**
+**An e-commerce portfolio project with a Django REST API and a React + TypeScript storefront.**
 
-A backend portfolio project focused on concurrency-safe inventory, clear service boundaries, secure access control and recoverable payment workflows. Stripe is used in **test mode**; this project is not a production payment platform.
+The backend focuses on concurrency-safe inventory, clear service boundaries, access control and recoverable Stripe Checkout workflows. The frontend provides a MayBell-inspired storefront, product catalog, images and categories, plus JWT-based account registration, login and profile access. Shopping cart, frontend order placement and payments are still in development. Stripe is used in **test mode**; this is not a production payment platform.
 
-[Features](#features) · [High-level design](#high-level-api-design) · [Low-level design](#low-level-api-design) · [Quick start](#quick-start) · [API](#api-documentation) · [Payments](#stripe-payments) · [Testing](#testing-and-ci) · [Limitations](#known-limitations)
+[Features](#features) · [High-level design](#high-level-api-design) · [Low-level design](#low-level-api-design) · [React storefront](#react-storefront) · [Quick start](#quick-start) · [API](#api-documentation) · [Payments](#stripe-payments) · [Testing](#testing-and-ci) · [Limitations](#known-limitations)
 
 ## Features
 
 | Area | Capabilities |
 | --- | --- |
 | **Accounts** | Registration, JWT access and refresh tokens, customer/admin roles, authenticated profile |
-| **Catalog** | Products and categories, filtering, search, sorting, pagination, admin-only writes |
+| **Catalog** | Products, disk-backed product images and categories, filtering, search, sorting, pagination, admin-only writes |
+| **Storefront** | React 19 + TypeScript + Vite + Tailwind CSS, responsive MayBell-inspired catalog, product images, category filtering and search |
+| **Frontend authentication** | Register, login, account page, protected routes, logout and JWT access-token refresh |
 | **Orders** | Multi-item orders, price snapshots, transactional stock reservation, cancellation and expiration |
 | **Concurrency** | PostgreSQL row-level locking, consistent lock ordering, serialization-failure retries, database constraints |
 | **Payments** | Stripe Checkout, signed webhooks, idempotent transitions, checkout recovery and reconciliation |
@@ -38,11 +43,12 @@ A backend portfolio project focused on concurrency-safe inventory, clear service
 
 ### High-Level API Design
 
-The API is a **modular Django monolith**, not a collection of microservices. Django REST Framework exposes JSON endpoints under `/api/v1/`; domain services enforce order and payment rules; PostgreSQL is the source of truth. Stripe is an external payment provider. A separate Docker Compose process runs recurring maintenance commands.
+The backend is a **modular Django monolith**, not a collection of microservices. A separate React single-page application consumes JSON endpoints under `/api/v1/`; domain services enforce order and payment rules; PostgreSQL is the source of truth. Stripe is an external payment provider. A separate Docker Compose process runs recurring maintenance commands. The frontend is served by Vite during local development.
 
 ```mermaid
 flowchart LR
-    Client[API client / Swagger UI] -->|JSON over HTTP| Views[DRF views and serializers]
+    Storefront[React + TypeScript SPA] -->|HTTP JSON /api/v1/| Views[DRF views and serializers]
+    Client[API client / Swagger UI] -->|JSON over HTTP| Views
     Views --> Security[JWT / permissions / throttles]
     Views --> Catalog[Catalog ORM queries]
     Views --> Orders[OrderService]
@@ -63,6 +69,7 @@ flowchart LR
 
 | Component | Responsibility |
 | --- | --- |
+| React storefront (`frontend/`) | Product browsing, category/search UI, account forms and JWT session handling |
 | `accounts`, `products`, `orders`, `payments` API views | Routing, authentication/permissions, request validation and HTTP responses |
 | DRF serializers | Validate incoming data and serialize API responses |
 | `OrderService` | Inventory reservation, order creation, cancellation and safe expiration |
@@ -81,6 +88,9 @@ All application endpoints below use the `/api/v1/` prefix and JSON request/respo
 | --- | --- | --- | --- | --- |
 | Register | `POST auth/register/` | `username`, `email`, `password`, `password_confirm` | `201` user fields | Public; `3/hour` throttle |
 | Login | `POST auth/login/` | `username`, `password` | `200` access/refresh JWTs | Public; `5/min` throttle |
+| Refresh JWT | `POST auth/token/refresh/` | `refresh` | `200` new access JWT | Holder of valid refresh token |
+| Current account | `GET auth/me/` | Bearer access JWT | `200` `id`, `username`, `email` | Authenticated |
+| Browse categories | `GET categories/` | No body | `200` category list | Public |
 | Browse products | `GET products/` | Optional `search`, `category`, `is_active`, `ordering`, `page`, `page_size` | `200` paginated products | Public; only active products for non-admins |
 | Create order | `POST orders/` | `items: [{product, quantity}]` | `201` order with item snapshots | Authenticated |
 | Read order | `GET orders/{id}/` | URL ID | `200` order with items | Owner or API admin |
@@ -141,7 +151,7 @@ erDiagram
 | --- | --- |
 | `Order` | `user_id`, `status`, `expires_at`; statuses: `PENDING`, `PAID`, `CANCELLED` |
 | `OrderItem` | `order_id`, `product_id`, `quantity >= 1`, `unit_price >= 0`; unique `(order, product)`; order-time price snapshot |
-| `Product` | `price`, `stock >= 0`, `is_active`, `category_id`; unique `sku` |
+| `Product` | `price`, `stock >= 0`, `is_active`, `category_id`, optional `image` path on disk; unique `sku` |
 | `Payment` | `order_id`, `amount`, `currency`, `status`, `checkout_status`, `stripe_session_id`, `checkout_claimed_at`, `last_reconciled_at`; unique non-null Stripe session ID |
 
 A conditional database constraint allows at most **one payment in `PENDING` or `SUCCEEDED` status per order**; `FAILED` attempts remain available as history. Payment processing uses two independent state dimensions:
@@ -201,6 +211,7 @@ Typical HTTP responses include `400` for invalid requests or disallowed transiti
 ### Repository structure
 
 ```text
+frontend/             React + TypeScript + Vite + Tailwind storefront
 accounts/             Registration, JWT, roles and permissions
 products/             Product and category APIs
 orders/               Order APIs, inventory service and expiration command
@@ -217,11 +228,35 @@ pyproject.toml        Ruff and Coverage configuration
 
 ## Tech stack
 
-Python 3.14 · Django 6.1 · Django REST Framework · Simple JWT · PostgreSQL 17 · psycopg · Stripe Checkout · Gunicorn · WhiteNoise · Docker Compose · Ruff · Coverage · GitHub Actions · GHCR
+Frontend: React 19 · TypeScript · React Router · Vite · Tailwind CSS 3
+
+Backend: Python 3.14 · Django 6.1 · Django REST Framework · Simple JWT · PostgreSQL 17 · psycopg · Stripe Checkout · Gunicorn · WhiteNoise · Docker Compose · Ruff · Coverage · GitHub Actions · GHCR
+
+## React storefront
+
+The frontend lives in `frontend/` and is built with React, TypeScript, Vite and Tailwind CSS. The responsive layout is based on the MayBell / Tailwind E-commerce design. It consumes the existing Django API, rather than rendering Django templates.
+
+Current frontend capabilities:
+
+- Product cards with media uploaded via Django Admin, category names, category filtering, search and pagination.
+- Registration, login, account profile, protected routes and logout.
+- JWT access-token refresh and a retry of authenticated requests after an expired access token.
+- A **demo cart counter only**; actual cart contents, order submission and Stripe checkout UI are not implemented yet.
+
+### Frontend routes and authentication
+
+| Route | Purpose |
+| --- | --- |
+| `/` | Product catalog / home |
+| `/register` | Customer registration |
+| `/login` | Login |
+| `/account` | Authenticated profile |
+
+Login uses `POST /api/v1/auth/login/`; authenticated requests use a Bearer access token. On access-token expiry, the frontend can call `POST /api/v1/auth/token/refresh/` and retry once. User details come from `GET /api/v1/auth/me/`. The current prototype stores JWT tokens in browser `sessionStorage` and Logout clears them locally. **This is not a production-grade browser authentication design:** storage is readable by page JavaScript and logout does not revoke already-issued tokens server-side.
 
 ## Quick start
 
-**Requirements:** Docker and Docker Compose, or Python 3.14 and PostgreSQL 17.
+**Requirements:** Docker and Docker Compose, or Python 3.14 and PostgreSQL 17 for the backend. Node.js and npm are required to run the React frontend locally.
 
 ### Docker (recommended)
 
@@ -244,7 +279,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-The API is available at `http://localhost:8000`. The `web` service applies migrations before starting Gunicorn; the `scheduler` service executes periodic maintenance commands. Inspect logs with:
+The API is available at `http://localhost:8000`. The `web` service applies migrations before starting Gunicorn; the `scheduler` service executes periodic maintenance commands. **This Compose setup runs the backend only; start `frontend/` separately with Vite.** Inspect logs with:
 
 ```bash
 docker compose logs -f web
@@ -275,6 +310,18 @@ python manage.py runserver
 ```
 
 When running Django outside Compose, maintenance commands must be invoked manually or scheduled separately.
+
+### Local React development
+
+Start PostgreSQL and Django as shown above. In a second terminal:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Open the frontend at `http://localhost:5173` and Django API at `http://127.0.0.1:8000`. During development, `vite.config.ts` proxies `/api` and `/media` to Django. To create sample products and upload images, visit `http://127.0.0.1:8000/admin/`; Django serves uploaded media directly only in development when `DJANGO_DEBUG=True`.
 
 ### Environment variables
 
@@ -386,7 +433,18 @@ coverage run manage.py test -v 2
 coverage report
 ```
 
-The test suite covers authentication, authorization, inventory and order workflows, concurrency, Checkout and Stripe webhook handling, reconciliation, administrative access and scoped throttling.
+The backend test suite covers authentication, authorization, inventory and order workflows, concurrency, Checkout and Stripe webhook handling, reconciliation, administrative access and scoped throttling.
+
+For frontend checks, run:
+
+```bash
+cd frontend
+npm ci
+npm run lint
+npm run build
+```
+
+The current GitHub Actions backend workflow does not replace these frontend checks.
 
 [GitHub Actions](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml) runs linting, Django configuration checks, migration checks and the test suite against PostgreSQL 17. Docker builds run for pull requests; images are published to [GitHub Container Registry](https://github.com/stakich/django-order-management-api/pkgs/container/django-order-management-api) on pushes to `main`. Dependabot checks Python dependencies, GitHub Actions and Docker.
 
@@ -399,6 +457,7 @@ The registry image is not a live deployment. For reproducible deployment, prefer
 ## Security and deployment notes
 
 - JWT and object-level ownership checks guard protected endpoints.
+- The browser prototype currently uses `sessionStorage` for JWTs. Use a reviewed production authentication design (for example secure HttpOnly cookies with appropriate CSRF defenses) before shipping a public storefront.
 - Scoped DRF throttling is configured for login (**5/min**), registration (**3/hour**) and checkout (**10/min**).
 - DRF's default local-memory cache is per worker/process; these are **best-effort** application limits, not globally enforced limits across multiple Gunicorn workers. Use a shared cache and edge-level controls in production.
 - Stripe webhook signatures are verified before event processing.
@@ -415,7 +474,9 @@ This project demonstrates backend engineering patterns using **Stripe test mode*
 - **Limited automated recovery:** The reconciliation command processes pending payments only when a Checkout Session ID is already stored. Stuck checkout attempts without a known ID or outside the conservative retry window may need manual investigation.
 - **Single-instance maintenance scheduler:** Docker Compose runs a simple sequential loop without distributed coordination, persisted job history, health-based failure alerts or a managed scheduling service.
 - **Process-local throttling:** Without a shared cache, rate limits are not globally consistent across multiple web workers.
-- **No customer-facing frontend or transactional emails:** The frontend is planned; the configured email backend is for local development.
+- **Incomplete frontend purchase flow:** The product catalog and account UI exist, but a persistent shopping cart, order creation and Stripe checkout UI are not implemented yet.
+- **Prototype JWT storage:** Access/refresh JWTs are held in browser `sessionStorage` and logout does not revoke tokens server-side.
+- **No transactional emails:** The configured email backend is for local development.
 
 These are explicit scope boundaries, not guarantees of safe operation with live payments. Before any production use, add durable payment-incident tracking, monitoring and alerting, production-grade scheduling, appropriate infrastructure controls, and end-to-end payment verification.
 
@@ -429,13 +490,17 @@ These are explicit scope boundaries, not guarantees of safe operation with live 
 - [x] Read-only Payment Admin
 - [x] OpenAPI/Swagger UI, automated tests, Ruff, Coverage and CI
 - [x] Docker builds, Dependabot and GHCR publishing workflow
-- [ ] React + TypeScript frontend
+- [x] React + TypeScript + Vite storefront foundation
+- [x] Product catalog with images, category filtering, search and pagination
+- [x] Frontend registration, login, protected account page, logout and JWT refresh
+- [ ] Persistent shopping cart and frontend order placement
+- [ ] Frontend Stripe Checkout integration and order history
 - [ ] Production deployment with HTTPS, alerting and a shared rate-limit cache
 - [ ] Refunds, persistent incident records and asynchronous webhook processing
 
 ## Project status
 
-**Backend portfolio MVP complete; frontend planned.** Core functionality is implemented and covered by automated tests. Deployment and payment-system extensions listed above are outside the current scope.
+**Backend portfolio MVP complete; React storefront in development.** Catalog and authentication flows are implemented in the frontend; cart, orders, Stripe Checkout UI and production deployment remain future work. The backend continues to be covered by its automated test suite.
 
 ---
 

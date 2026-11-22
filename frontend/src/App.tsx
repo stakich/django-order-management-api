@@ -33,32 +33,46 @@ export default function App() {
     return () => controller.abort();
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
+
+useEffect(() => {
+  const controller = new AbortController();
+
+  const timeout = window.setTimeout(async () => {
     setLoading(true);
     setError(null);
 
-    const timeout = window.setTimeout(async () => {
-      try {
-        const data = await getProducts(search, page, categoryId, controller.signal);
-        if (controller.signal.aborted) return;
+    try {
+      const data = await getProducts(
+        search,
+        page,
+        categoryId,
+        controller.signal
+      );
 
-        setProducts(data.results);
-        setTotal(data.count);
-        setHasNextPage(data.next !== null);
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : "Could not load products");
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
+      if (controller.signal.aborted) return;
+
+      setProducts(data.results);
+      setTotal(data.count);
+      setHasNextPage(data.next !== null);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+
+      setError(
+        err instanceof Error ? err.message : "Could not load products"
+      );
+    } finally {
+      if (!controller.signal.aborted) {
+        setLoading(false);
       }
-    }, search ? 350 : 0);
+    }
+  }, search ? 350 : 0);
 
-    return () => {
-      window.clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [search, page, categoryId]);
+  return () => {
+    window.clearTimeout(timeout);
+    controller.abort();
+  };
+}, [search, page, categoryId]);
+
 
   function handleSearchChange(value: string) {
     setSearch(value);
