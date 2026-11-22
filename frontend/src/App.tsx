@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import { getProducts } from "./api/products";
+import { getCategories, getProducts } from "./api/products";
 import { Header } from "./components/Header";
 import { ProductCard } from "./components/ProductCard";
-import type { Product } from "./types/product";
+import type { Category, Product } from "./types/product";
 
 export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [cartCount, setCartCount] = useState(0);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [categoriesError, setCategoriesError] = useState(false);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -16,12 +19,28 @@ export default function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+
+    getCategories(controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          setCategories(data.filter((category) => category.is_active));
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCategoriesError(true);
+      });
+
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
 
     const timeout = window.setTimeout(async () => {
       try {
-        const data = await getProducts(search, page, controller.signal);
+        const data = await getProducts(search, page, categoryId, controller.signal);
         if (controller.signal.aborted) return;
 
         setProducts(data.results);
@@ -39,7 +58,7 @@ export default function App() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [search, page]);
+  }, [search, page, categoryId]);
 
   function handleSearchChange(value: string) {
     setSearch(value);
@@ -93,6 +112,33 @@ export default function App() {
             </div>
             {!loading && !error && (
               <span className="text-sm text-neutral-500">{total} products</span>
+            )}
+          </div>
+
+          <div className="mb-6 flex flex-wrap items-center gap-3">
+            <label htmlFor="category-filter" className="text-sm font-medium">
+              Category
+            </label>
+            <select
+              id="category-filter"
+              value={categoryId ?? ""}
+              onChange={(event) => {
+                setCategoryId(event.target.value ? Number(event.target.value) : null);
+                setPage(1);
+              }}
+              className="min-w-52 border border-neutral-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">All categories</option>
+              {categories.map((category) => (
+                <option value={category.id} key={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+            {categoriesError && (
+              <p role="alert" className="text-sm text-red-700">
+                Could not load categories.
+              </p>
             )}
           </div>
 

@@ -6,21 +6,26 @@ type ProductCardProps = {
 };
 
 export function ProductCard({ product, onAdd }: ProductCardProps) {
+  const hasImage = Boolean(product.image_url);
+
   return (
     <article className="group overflow-hidden border border-neutral-100 bg-white">
       <div className="relative flex aspect-square items-center justify-center bg-violet-50 p-5">
         <img
-          className="h-full w-full object-contain opacity-75 transition-transform duration-300 group-hover:scale-105"
-          src="/assets/images/product-chair.png"
-          alt="Illustrative furniture image, not a photo of this product"
+          className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-105"
+          src={product.image_url ?? "/assets/images/product-chair.png"}
+          alt={hasImage ? product.name : "Generic furniture illustration"}
+          loading="lazy"
         />
-        <span className="absolute bottom-2 left-2 bg-white/90 px-2 py-1 text-xs text-neutral-600">
-          Demo image
-        </span>
+        {!hasImage && (
+          <span className="absolute bottom-2 left-2 bg-white/90 px-2 py-1 text-xs text-neutral-600">
+            Demo image
+          </span>
+        )}
       </div>
       <div className="space-y-2 p-4">
         <p className="text-xs uppercase tracking-wider text-neutral-500">
-          Category #{product.category}
+          {product.category_name}
         </p>
         <h3 className="font-semibold uppercase tracking-wide">{product.name}</h3>
         <p className="text-lg font-semibold">
