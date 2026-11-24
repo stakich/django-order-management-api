@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { getCategories, getProducts } from "./api/products";
+import { useCart } from "./cart/useCart";
 import { Header } from "./components/Header";
 import { ProductCard } from "./components/ProductCard";
 import type { Category, Product } from "./types/product";
 
 export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
-  const [cartCount, setCartCount] = useState(0);
+  const { add, isPlacingOrder } = useCart();
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [categoriesError, setCategoriesError] = useState(false);
@@ -82,7 +83,6 @@ useEffect(() => {
   return (
     <div id="home" className="min-h-screen bg-white text-neutral-900">
       <Header
-        cartCount={cartCount}
         search={search}
         onSearchChange={handleSearchChange}
       />
@@ -173,7 +173,8 @@ useEffect(() => {
                   <ProductCard
                     key={product.id}
                     product={product}
-                    onAdd={() => setCartCount((prev) => prev + 1)}
+                    onAdd={() => add(product)}
+                    addingDisabled={isPlacingOrder}
                   />
                 ))}
               </div>
