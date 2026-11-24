@@ -1,9 +1,10 @@
 import { useState, type SubmitEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const { state } = useLocation();
 
   const { signIn } = useAuth();
   const [username, setUsername] = useState("");
@@ -11,14 +12,18 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-    async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
+  async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setLoading(true);
 
     try {
       await signIn(username, password);
-      navigate("/account", { replace: true });
+      const from: unknown = state?.from;
+      const canReturn =
+        typeof from === "string" &&
+        /^\/(?:cart|orders(?:\/[1-9]\d*)?|checkout\/(?:success|cancel))(?:\?[^#]*)?$/.test(from);
+      navigate(canReturn ? from : "/account", { replace: true });
     } catch (error) {
       setError(
         error instanceof Error ? error.message : "Login failed"

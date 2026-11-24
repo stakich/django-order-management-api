@@ -11,7 +11,7 @@
 
 **An e-commerce portfolio project with a Django REST API and a React + TypeScript storefront.**
 
-The backend focuses on concurrency-safe inventory, clear service boundaries, access control and recoverable Stripe Checkout workflows. The frontend provides a MayBell-inspired storefront, product catalog, images and categories, plus JWT-based account registration, login and profile access. Shopping cart, frontend order placement and payments are still in development. Stripe is used in **test mode**; this is not a production payment platform.
+The backend focuses on concurrency-safe inventory, clear service boundaries, access control and recoverable Stripe Checkout workflows. The MayBell-inspired storefront includes a product catalog, JWT-based accounts, a persistent cart, order placement and history, and a redirect to hosted Stripe Checkout. The checkout integration is designed for **Stripe test mode**.
 
 [Features](#features) · [High-level design](#high-level-api-design) · [Low-level design](#low-level-api-design) · [React storefront](#react-storefront) · [Quick start](#quick-start) · [API](#api-documentation) · [Payments](#stripe-payments) · [Testing](#testing-and-ci) · [Limitations](#known-limitations)
 
@@ -240,8 +240,10 @@ Current frontend capabilities:
 
 - Product cards with media uploaded via Django Admin, category names, category filtering, search and pagination.
 - Registration, login, account profile, protected routes and logout.
-- JWT access-token refresh and a retry of authenticated requests after an expired access token.
-- A **demo cart counter only**; actual cart contents, order submission and Stripe checkout UI are not implemented yet.
+- JWT access-token refresh and a single retry within the same session after an expired access token.
+- A browser-local cart with quantity controls and an estimated total. Django confirms current stock and saves the final unit prices when it creates the order.
+- Order history, details and cancellation. The cart clears after Django creates the order successfully.
+- Hosted Stripe Checkout for pending, unexpired orders with a positive total. The return pages show the status from Django.
 
 ### Frontend routes and authentication
 
@@ -251,12 +253,16 @@ Current frontend capabilities:
 | `/register` | Customer registration |
 | `/login` | Login |
 | `/account` | Authenticated profile |
+| `/cart` | Cart, quantity changes and authenticated order placement |
+| `/orders` | Authenticated order history |
+| `/orders/:orderId` | Order details, cancellation and Checkout |
+| `/checkout/success`, `/checkout/cancel` | Authenticated return pages with payment status |
 
 Login uses `POST /api/v1/auth/login/`; authenticated requests use a Bearer access token. On access-token expiry, the frontend can call `POST /api/v1/auth/token/refresh/` and retry once. User details come from `GET /api/v1/auth/me/`. The current prototype stores JWT tokens in browser `sessionStorage` and Logout clears them locally. **This is not a production-grade browser authentication design:** storage is readable by page JavaScript and logout does not revoke already-issued tokens server-side.
 
 ## Quick start
 
-**Requirements:** Docker and Docker Compose, or Python 3.14 and PostgreSQL 17 for the backend. Node.js and npm are required to run the React frontend locally.
+**Requirements:** Docker and Docker Compose, or Python 3.14 and PostgreSQL 17 for the backend. Use Node.js 24 and npm for the React frontend.
 
 ### Docker (recommended)
 
@@ -389,6 +395,15 @@ Pass the access token as `Authorization: Bearer <access_token>`.
 5. Eligible payment/order statuses are updated atomically.
 6. Periodic reconciliation can check older pending payments with known Checkout Session IDs.
 
+For the local React storefront, use these backend settings:
+
+```dotenv
+STRIPE_SUCCESS_URL=http://localhost:5173/checkout/success?order_id={ORDER_ID}
+STRIPE_CANCEL_URL=http://localhost:5173/checkout/cancel?order_id={ORDER_ID}
+```
+
+Use the same frontend origin you signed in on, including the hostname and port. Django fills in `{ORDER_ID}` when creating a Checkout Session. The return page uses that ID to fetch your order and can refresh the status while Stripe's webhook is pending. Leaving Stripe Checkout keeps the existing order and reservation state. To release an eligible reservation, use **Cancel order** on the order details page.
+
 To forward **test-mode** Stripe webhooks locally using the Stripe CLI:
 
 ```bash
@@ -442,9 +457,12 @@ cd frontend
 npm ci
 npm run lint
 npm run build
+npm test
 ```
 
-The current GitHub Actions backend workflow does not replace these frontend checks.
+The frontend CI job runs the same commands on Node.js 24. The unit tests cover cart persistence and totals, the order payload, session-bound retries and checkout URL validation. Stripe test-mode payment verification requires a Stripe test account and signed webhook delivery.
+
+Local Chromium checks with Django and PostgreSQL verified cart persistence, stock limits, login and JWT refresh, order ownership, current prices, cancellation and stock restoration. The checkout checks used a simulated Stripe service and signed local webhook payloads. They verified cancel and success returns, session reuse, duplicate webhook delivery, expired orders and payment-provider errors.
 
 [GitHub Actions](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml) runs linting, Django configuration checks, migration checks and the test suite against PostgreSQL 17. Docker builds run for pull requests; images are published to [GitHub Container Registry](https://github.com/stakich/django-order-management-api/pkgs/container/django-order-management-api) on pushes to `main`. Dependabot checks Python dependencies, GitHub Actions and Docker.
 
@@ -474,7 +492,8 @@ This project demonstrates backend engineering patterns using **Stripe test mode*
 - **Limited automated recovery:** The reconciliation command processes pending payments only when a Checkout Session ID is already stored. Stuck checkout attempts without a known ID or outside the conservative retry window may need manual investigation.
 - **Single-instance maintenance scheduler:** Docker Compose runs a simple sequential loop without distributed coordination, persisted job history, health-based failure alerts or a managed scheduling service.
 - **Process-local throttling:** Without a shared cache, rate limits are not globally consistent across multiple web workers.
-- **Incomplete frontend purchase flow:** The product catalog and account UI exist, but a persistent shopping cart, order creation and Stripe checkout UI are not implemented yet.
+- **Browser-local shopping cart:** Cart contents are shared by users of the same browser profile and persist in local storage. They do not synchronize across devices.
+- **Hosted Checkout:** The frontend accepts Checkout URLs under `https://checkout.stripe.com`. It uses the order status from Django to show payment confirmation.
 - **Prototype JWT storage:** Access/refresh JWTs are held in browser `sessionStorage` and logout does not revoke tokens server-side.
 - **No transactional emails:** The configured email backend is for local development.
 
@@ -493,14 +512,16 @@ These are explicit scope boundaries, not guarantees of safe operation with live 
 - [x] React + TypeScript + Vite storefront foundation
 - [x] Product catalog with images, category filtering, search and pagination
 - [x] Frontend registration, login, protected account page, logout and JWT refresh
-- [ ] Persistent shopping cart and frontend order placement
-- [ ] Frontend Stripe Checkout integration and order history
+- [x] Persistent shopping cart, frontend order placement and order history
+- [x] Frontend Stripe Checkout integration and return pages
+- [x] Frontend lint, build and unit-test CI job
+- [ ] End-to-end payment verification against Stripe test mode
 - [ ] Production deployment with HTTPS, alerting and a shared rate-limit cache
 - [ ] Refunds, persistent incident records and asynchronous webhook processing
 
 ## Project status
 
-**Backend portfolio MVP complete; React storefront in development.** Catalog and authentication flows are implemented in the frontend; cart, orders, Stripe Checkout UI and production deployment remain future work. The backend continues to be covered by its automated test suite.
+**Portfolio MVP implemented.** The storefront covers catalog, authentication, cart, orders and hosted Checkout. End-to-end payment verification with Stripe test mode and production deployment remain open.
 
 ---
 

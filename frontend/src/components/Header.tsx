@@ -1,19 +1,15 @@
 
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
+import { useCart } from "../cart/useCart";
 
-type HeaderProps = {
-  cartCount: number;
-  search: string;
-  onSearchChange: (value: string) => void;
-};
+type HeaderProps =
+  | { search: string; onSearchChange: (value: string) => void }
+  | { search?: never; onSearchChange?: never };
 
-export function Header({
-  cartCount,
-  search,
-  onSearchChange,
-}: HeaderProps) {
+export function Header({ search, onSearchChange }: HeaderProps) {
   const { user, isInitializing, signOut } = useAuth();
+  const { count } = useCart();
 
   return (
     <>
@@ -26,23 +22,23 @@ export function Header({
           />
         </Link>
 
-        <label className="order-3 flex w-full items-center border border-neutral-200 md:order-none md:max-w-lg md:flex-1">
-          <span className="sr-only">Search products</span>
-          <input
-            className="min-w-0 flex-1 px-4 py-2.5 outline-none"
-            type="search"
-            value={search}
-            onChange={(event) =>
-              onSearchChange(event.target.value)
-            }
-            placeholder="Search products..."
-          />
-          <span className="bg-amber-400 px-5 py-2.5 font-medium">
-            Search
-          </span>
-        </label>
+        {onSearchChange && (
+          <label className="order-3 flex w-full items-center border border-neutral-200 md:order-none md:max-w-lg md:flex-1">
+            <span className="sr-only">Search products</span>
+            <input
+              className="min-w-0 flex-1 px-4 py-2.5 outline-none"
+              type="search"
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder="Search products..."
+            />
+            <span className="bg-amber-400 px-5 py-2.5 font-medium">
+              Search
+            </span>
+          </label>
+        )}
 
-        <div className="flex items-center gap-2 text-sm font-medium">
+        <Link to="/cart" className="flex items-center gap-2 text-sm font-medium hover:text-violet-800">
           <svg
             aria-hidden="true"
             className="h-6 w-6"
@@ -59,8 +55,8 @@ export function Header({
             <circle cx="10" cy="20" r="1" fill="currentColor" stroke="none" />
             <circle cx="19" cy="20" r="1" fill="currentColor" stroke="none" />
           </svg>
-          <span>Cart ({cartCount})</span>
-        </div>
+          <span>Cart ({count})</span>
+        </Link>
       </header>
 
       <nav className="bg-violet-900 text-white" aria-label="Main navigation">
@@ -84,6 +80,9 @@ export function Header({
             {!isInitializing &&
               (user ? (
                 <>
+                  <Link to="/orders" className="hover:text-amber-300">
+                    My orders
+                  </Link>
                   <Link
                     to="/account"
                     className="hover:text-amber-300"
