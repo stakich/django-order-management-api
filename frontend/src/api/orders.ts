@@ -62,7 +62,7 @@ export async function startCheckout(id: number, signal?: AbortSignal): Promise<s
   } catch {
     throw new Error("Invalid Stripe Checkout URL");
   }
-  if (url?.origin !== "https://checkout.stripe.com" || url.username || url.password) {
+  if (url?.protocol !== "https:" || url.host !== "checkout.stripe.com" || url.username || url.password) {
     throw new Error("Invalid Stripe Checkout URL");
   }
   return url.href;

@@ -20,7 +20,7 @@ export default function CartPage() {
     setError("");
     try {
       const order = await placeOrder();
-      if (order && window.location.pathname === "/cart") {
+      if (order && /^\/cart\/?$/i.test(window.location.pathname)) {
         navigate(`/orders/${order.id}`);
       }
     } catch (err) {

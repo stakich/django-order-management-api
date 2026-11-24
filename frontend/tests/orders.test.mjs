@@ -111,6 +111,7 @@ test("checkout rejects malformed and unexpected redirect URLs", async (t) => {
   const urls = [
     "",
     "http://checkout.stripe.com/c/example",
+    "blob:https://checkout.stripe.com/example",
     "https://checkout.stripe.com.example.invalid/c/example",
     "https://checkout.stripe.com:444/c/example",
     "https://example.invalid@checkout.stripe.com/c/example",
