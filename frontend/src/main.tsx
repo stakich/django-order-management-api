@@ -14,6 +14,7 @@ import { CartProvider } from "./cart/CartProvider";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import AccountPage from "./pages/AccountPage";
 import CartPage from "./pages/CartPage";
+import CheckoutResultPage from "./pages/CheckoutResultPage";
 import LoginPage from "./pages/LoginPage";
 import OrderPage from "./pages/OrderPage";
 import OrdersPage from "./pages/OrdersPage";
@@ -35,6 +36,8 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/account" element={<AccountPage />} />
               <Route path="/orders" element={<OrdersPage />} />
               <Route path="/orders/:orderId" element={<OrderPage />} />
+              <Route path="/checkout/success" element={<CheckoutResultPage outcome="success" />} />
+              <Route path="/checkout/cancel" element={<CheckoutResultPage outcome="cancel" />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />

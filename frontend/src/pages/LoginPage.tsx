@@ -21,7 +21,8 @@ export default function LoginPage() {
       await signIn(username, password);
       const from: unknown = state?.from;
       const canReturn =
-        typeof from === "string" && /^\/(?:cart|orders(?:\/[1-9]\d*)?)$/.test(from);
+        typeof from === "string" &&
+        /^\/(?:cart|orders(?:\/[1-9]\d*)?|checkout\/(?:success|cancel))(?:\?[^#]*)?$/.test(from);
       navigate(canReturn ? from : "/account", { replace: true });
     } catch (error) {
       setError(

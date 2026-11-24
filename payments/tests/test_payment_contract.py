@@ -45,6 +45,13 @@ class PaymentContractTests(APITestCase):
         self.assertEqual(self.client.post(self.url).status_code, 401)
         self.assertFalse(Payment.objects.exists())
 
+    @override_settings(
+        STRIPE_SUCCESS_URL=(
+            "http://localhost:5173/checkout/success?order_id={ORDER_ID}"
+            "&session_id={CHECKOUT_SESSION_ID}"
+        ),
+        STRIPE_CANCEL_URL="http://localhost:5173/checkout/cancel?order_id={ORDER_ID}",
+    )
     def test_checkout_uses_order_snapshot_amount_and_saves_stripe_session(self):
         self.client.force_authenticate(self.owner)
         session = SimpleNamespace(id="cs_test_123", url="https://checkout.stripe.com/test")
@@ -64,6 +71,15 @@ class PaymentContractTests(APITestCase):
         self.assertEqual(kwargs["line_items"][0]["price_data"]["unit_amount"], 2000)
         self.assertEqual(kwargs["metadata"]["payment_id"], str(payment.id))
         self.assertEqual(kwargs["idempotency_key"], f"checkout-payment-{payment.id}")
+        self.assertEqual(
+            kwargs["success_url"],
+            f"http://localhost:5173/checkout/success?order_id={self.order.id}"
+            "&session_id={CHECKOUT_SESSION_ID}",
+        )
+        self.assertEqual(
+            kwargs["cancel_url"],
+            f"http://localhost:5173/checkout/cancel?order_id={self.order.id}",
+        )
 
     def test_repeated_checkout_reuses_existing_stripe_session(self):
         self.client.force_authenticate(self.owner)

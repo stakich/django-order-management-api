@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError, clearTokens, saveTokens } from "../src/api/auth.ts";
-import { createOrder } from "../src/api/orders.ts";
+import { createOrder, parseOrderId, startCheckout } from "../src/api/orders.ts";
 
 const cartItem = { id: 2, quantity: 3, price: "99.00" };
 
@@ -91,4 +91,52 @@ test("an invalid refresh ends the session without retrying the order", async (t)
   assert.equal(fetch.mock.callCount(), 2);
   assert.equal(storage.has("access_token"), false);
   assert.equal(storage.has("refresh_token"), false);
+});
+
+test("checkout redirects to the server-provided Stripe Checkout URL", async (t) => {
+  mockSession(t);
+  const url = "https://checkout.stripe.com/c/example";
+  const fetch = t.mock.method(globalThis, "fetch", async () => {
+    return Response.json({ checkout_url: url });
+  });
+
+  assert.equal(await startCheckout(42), url);
+  const [path, options] = fetch.mock.calls[0].arguments;
+  assert.equal(path, "/api/v1/orders/42/checkout/");
+  assert.equal(options.method, "POST");
+});
+
+test("checkout rejects malformed and unexpected redirect URLs", async (t) => {
+  mockSession(t);
+  const urls = [
+    "",
+    "http://checkout.stripe.com/c/example",
+    "https://checkout.stripe.com.example.invalid/c/example",
+    "https://checkout.stripe.com:444/c/example",
+    "https://example.invalid@checkout.stripe.com/c/example",
+  ];
+  t.mock.method(globalThis, "fetch", async () => {
+    return Response.json({ checkout_url: urls.shift() });
+  });
+
+  while (urls.length) {
+    await assert.rejects(startCheckout(42), { message: "Invalid Stripe Checkout URL" });
+  }
+});
+
+test("checkout surfaces backend failures", async (t) => {
+  mockSession(t);
+  const fetch = t.mock.method(globalThis, "fetch", async () => {
+    return Response.json({ detail: "Order reservation has expired" }, { status: 400 });
+  });
+
+  await assert.rejects(startCheckout(42), { status: 400, message: "Order reservation has expired" });
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
+test("the order ID parser accepts only positive decimal integers", () => {
+  assert.equal(parseOrderId("42"), 42);
+  for (const value of [null, "", "01", "-1", "4e2", "9007199254740992"]) {
+    assert.equal(parseOrderId(value), null);
+  }
 });

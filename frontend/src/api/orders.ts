@@ -20,6 +20,11 @@ export type Order = {
 
 const ORDERS_URL = "/api/v1/orders/";
 
+export function parseOrderId(value: string | null): number | null {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 && String(id) === value ? id : null;
+}
+
 export function createOrder(
   items: ReadonlyArray<Pick<CartItem, "id" | "quantity">>,
 ): Promise<Order> {
@@ -42,4 +47,23 @@ export function getOrder(id: number, signal?: AbortSignal): Promise<Order> {
 
 export function cancelOrder(id: number): Promise<Order> {
   return request<Order>(`${ORDERS_URL}${id}/cancel/`, { method: "POST" }, true);
+}
+
+export async function startCheckout(id: number, signal?: AbortSignal): Promise<string> {
+  const data = await request<{ checkout_url: string }>(
+    `${ORDERS_URL}${id}/checkout/`,
+    { method: "POST", signal },
+    true,
+  );
+  const value = data?.checkout_url;
+  let url: URL | null;
+  try {
+    url = typeof value === "string" ? new URL(value) : null;
+  } catch {
+    throw new Error("Invalid Stripe Checkout URL");
+  }
+  if (url?.origin !== "https://checkout.stripe.com" || url.username || url.password) {
+    throw new Error("Invalid Stripe Checkout URL");
+  }
+  return url.href;
 }
