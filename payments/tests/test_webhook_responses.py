@@ -1,6 +1,11 @@
+import hashlib
+import hmac
+import json
+import time
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import OperationalError
 from django.test import override_settings
@@ -8,11 +13,6 @@ from rest_framework.test import APITestCase
 
 from orders.models import Order
 from payments.models import Payment
-
-
-class StripeSession(dict):
-    def to_dict(self):
-        return dict(self)
 
 
 @override_settings(STRIPE_WEBHOOK_SECRET="whsec_test")
@@ -37,39 +37,42 @@ class StripeWebhookResponseTests(APITestCase):
         )
 
     def make_event(self, event_type="checkout.session.completed"):
-        session = StripeSession(
-            {
-                "id": "cs_test_webhook",
-                "mode": "payment",
-                "status": "complete",
-                "payment_status": "paid",
-                "amount_total": 1999,
-                "currency": "eur",
-                "payment_intent": "pi_test_webhook",
-                "metadata": {
-                    "order_id": str(self.order.id),
-                    "payment_id": str(self.payment.id),
-                },
-            }
-        )
+        session = {
+            "id": "cs_test_webhook",
+            "object": "checkout.session",
+            "mode": "payment",
+            "status": "complete",
+            "payment_status": "paid",
+            "amount_total": 1999,
+            "currency": "eur",
+            "payment_intent": "pi_test_webhook",
+            "metadata": {
+                "order_id": str(self.order.id),
+                "payment_id": str(self.payment.id),
+            },
+        }
 
         return {
             "id": "evt_test_webhook",
+            "object": "event",
             "type": event_type,
             "data": {"object": session},
         }
 
     def send_event(self, event):
-        with patch(
-            "payments.views.stripe.Webhook.construct_event",
-            return_value=event,
-        ):
-            return self.client.post(
-                self.url,
-                data="{}",
-                content_type="application/json",
-                HTTP_STRIPE_SIGNATURE="test_signature",
-            )
+        payload = json.dumps(event)
+        timestamp = int(time.time())
+        signature = hmac.new(
+            settings.STRIPE_WEBHOOK_SECRET.encode(),
+            f"{timestamp}.{payload}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return self.client.post(
+            self.url,
+            data=payload,
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE=f"t={timestamp},v1={signature}",
+        )
 
     def test_invalid_signature_returns_400(self):
         response = self.client.post(
