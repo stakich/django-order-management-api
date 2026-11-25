@@ -12,7 +12,7 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["id", "created_at", "category_name", "image_url"]
 
-    def get_image_url(self, obj):
+    def get_image_url(self, obj: Product) -> str | None:
         return obj.image.url if obj.image else None
 
 

@@ -1,5 +1,5 @@
 
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 
 export default function AccountPage() {
@@ -23,6 +23,10 @@ export default function AccountPage() {
         <p>
           <strong>Email:</strong> {user?.email}
         </p>
+
+        <Link to="/orders" className="block text-violet-800 underline">
+          View my orders
+        </Link>
 
         <button
           type="button"

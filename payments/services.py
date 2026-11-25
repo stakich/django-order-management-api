@@ -116,6 +116,7 @@ class PaymentService:
     @staticmethod
     def create_stripe_session(payment):
         amount_in_cents = PaymentService.convert_to_cents(payment.amount)
+        order_id = str(payment.order_id)
         stripe.api_key = settings.STRIPE_SECRET_KEY
         try:
             session = stripe.checkout.Session.create(
@@ -130,10 +131,10 @@ class PaymentService:
                         "quantity": 1,
                     }
                 ],
-                success_url=settings.STRIPE_SUCCESS_URL,
-                cancel_url=settings.STRIPE_CANCEL_URL,
+                success_url=settings.STRIPE_SUCCESS_URL.replace("{ORDER_ID}", order_id),
+                cancel_url=settings.STRIPE_CANCEL_URL.replace("{ORDER_ID}", order_id),
                 metadata={
-                    "order_id": str(payment.order_id),
+                    "order_id": order_id,
                     "payment_id": str(payment.id),
                 },
                 idempotency_key=f"checkout-payment-{payment.id}",

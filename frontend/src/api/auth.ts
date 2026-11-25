@@ -37,26 +37,31 @@ export function hasSession(): boolean {
 }
 
 export function saveTokens(tokens: AuthTokens): void {
+  sessionVersion += 1;
   sessionStorage.setItem(ACCESS_KEY, tokens.access);
   sessionStorage.setItem(REFRESH_KEY, tokens.refresh);
 }
 
 export function clearTokens(): void {
+  sessionVersion += 1;
   sessionStorage.removeItem(ACCESS_KEY);
   sessionStorage.removeItem(REFRESH_KEY);
 
   window.dispatchEvent(new Event(SESSION_ENDED_EVENT));
 }
 
-// One refresh request shared by concurrent callers.
-let refreshPromise: Promise<string | null> | null = null;
+let sessionVersion = 0;
+let pendingRefresh: {
+  version: number;
+  promise: Promise<string | null>;
+} | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
-  if (refreshPromise) {
-    return refreshPromise;
+function refreshAccessToken(version: number): Promise<string | null> {
+  if (pendingRefresh?.version === version) {
+    return pendingRefresh.promise;
   }
 
-  refreshPromise = (async () => {
+  const promise = (async () => {
     const refresh = sessionStorage.getItem(REFRESH_KEY);
 
     if (!refresh) {
@@ -70,10 +75,10 @@ async function refreshAccessToken(): Promise<string | null> {
       body: JSON.stringify({ refresh }),
     });
 
+    if (sessionVersion !== version) return null;
+
     if (response.status === 400 || response.status === 401) {
-      if (sessionStorage.getItem(REFRESH_KEY) === refresh) {
-        clearTokens();
-      }
+      clearTokens();
       return null;
     }
 
@@ -92,8 +97,7 @@ async function refreshAccessToken(): Promise<string | null> {
       throw new Error("Invalid token refresh response");
     }
 
-    // Do not restore a session after logout.
-    if (sessionStorage.getItem(REFRESH_KEY) !== refresh) {
+    if (sessionVersion !== version) {
       return null;
     }
 
@@ -105,10 +109,13 @@ async function refreshAccessToken(): Promise<string | null> {
 
     return data.access;
   })().finally(() => {
-    refreshPromise = null;
+    if (pendingRefresh?.promise === promise) {
+      pendingRefresh = null;
+    }
   });
 
-  return refreshPromise;
+  pendingRefresh = { version, promise };
+  return promise;
 }
 
 export async function authenticatedFetch(
@@ -116,6 +123,14 @@ export async function authenticatedFetch(
   options: RequestInit = {}
 ): Promise<Response> {
   const originalToken = sessionStorage.getItem(ACCESS_KEY);
+  const version = sessionVersion;
+
+  function assertCurrentSession() {
+    options.signal?.throwIfAborted();
+    if (sessionVersion !== version) {
+      throw new DOMException("The active session changed", "AbortError");
+    }
+  }
 
   function sendRequest(token: string | null): Promise<Response> {
     const headers = new Headers(options.headers);
@@ -128,6 +143,7 @@ export async function authenticatedFetch(
   }
 
   const response = await sendRequest(originalToken);
+  assertCurrentSession();
 
   if (response.status !== 401 || !originalToken) {
     return response;
@@ -139,14 +155,15 @@ export async function authenticatedFetch(
   const newToken =
     currentToken && currentToken !== originalToken
       ? currentToken
-      : await refreshAccessToken();
+      : await refreshAccessToken(version);
 
   if (!newToken) {
     return response;
   }
 
-  // Retry exactly once.
+  assertCurrentSession();
   const retryResponse = await sendRequest(newToken);
+  assertCurrentSession();
 
   if (
     retryResponse.status === 401 &&
@@ -158,7 +175,7 @@ export async function authenticatedFetch(
   return retryResponse;
 }
 
-async function request<T>(
+export async function request<T>(
   url: string,
   options: RequestInit = {},
   authenticated = false
