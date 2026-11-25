@@ -7,7 +7,11 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
+from .health import readiness
+
+
 urlpatterns = [
+    path("api/health/ready/", readiness, name="readiness"),
     path("admin/", admin.site.urls),
     path("api/v1/", include("products.urls")),
     path("api/v1/auth/", include("accounts.urls")),

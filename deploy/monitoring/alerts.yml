@@ -1,0 +1,14 @@
+groups:
+  - name: storefront
+    rules:
+      - alert: StorefrontReadinessFailed
+        expr: probe_success{job="django_readiness"} == 0
+        for: 1m
+        annotations:
+          summary: "The storefront readiness check is failing"
+
+      - alert: BlackboxScrapeFailed
+        expr: up{job="django_readiness"} == 0
+        for: 1m
+        annotations:
+          summary: "Prometheus cannot scrape the Blackbox probe"
