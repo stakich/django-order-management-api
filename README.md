@@ -343,6 +343,57 @@ Open the frontend at `http://localhost:5173` and Django API at `http://127.0.0.1
 
 The redirect URLs in `.env.example` are placeholders; corresponding success/cancel pages are not implemented in this backend. Never commit `.env` or real credentials.
 
+## Local monitoring
+
+Start the storefront, Django, PostgreSQL, and the monitoring services from the repository root:
+
+```bash
+docker compose -f compose.yaml -f compose.local.yaml -f compose.monitoring.yaml \
+  up -d --build
+```
+
+| Service | Local URL |
+| --- | --- |
+| Storefront | http://127.0.0.1:8080/ |
+| Django readiness through Nginx | http://127.0.0.1:8080/api/health/ready/ |
+| Grafana | http://127.0.0.1:3000/ |
+| Prometheus | http://127.0.0.1:9090/ |
+| Alertmanager | http://127.0.0.1:9093/ |
+
+Add a Prometheus data source in Grafana with the URL `http://prometheus:9090`. Use the two queries below in the **Storefront Monitoring** dashboard:
+
+```promql
+probe_success{job="django_readiness"}
+up{job="django_readiness"}
+```
+
+Blackbox Exporter checks Django readiness through Nginx. Django runs `SELECT 1` against PostgreSQL. The readiness endpoint returns HTTP 200 on success and HTTP 503 when the database connection fails. Prometheus stores the probe results and evaluates the alert rules.
+
+To reproduce a local database outage, follow the webhook receiver logs in one terminal:
+
+```bash
+docker compose -f compose.yaml -f compose.local.yaml -f compose.monitoring.yaml \
+  logs -f --tail=10 alert-webhook
+```
+
+In a second terminal, stop PostgreSQL:
+
+```bash
+docker compose -f compose.yaml -f compose.local.yaml -f compose.monitoring.yaml \
+  stop postgres
+```
+
+When PostgreSQL is down, `probe_success` drops to `0` while `up` stays at `1`. After the condition holds for one minute, Prometheus marks `StorefrontReadinessFailed` as firing. Alertmanager forwards it to the local webhook, which logs `firing: StorefrontReadinessFailed`.
+
+Restore PostgreSQL:
+
+```bash
+docker compose -f compose.yaml -f compose.local.yaml -f compose.monitoring.yaml \
+  start postgres
+```
+
+After recovery, `probe_success` returns to `1` and the receiver logs `resolved: StorefrontReadinessFailed`. If Blackbox Exporter itself is stopped, `up` drops to `0` and `probe_success` has no current sample. The local webhook prints notifications to container logs.
+
 ## API documentation
 
 With Django running:
