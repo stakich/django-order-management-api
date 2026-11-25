@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { getCategories, getProducts } from "./api/products";
+import { useCart } from "./cart/useCart";
 import { Header } from "./components/Header";
 import { ProductCard } from "./components/ProductCard";
 import type { Category, Product } from "./types/product";
 
 export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
-  const [cartCount, setCartCount] = useState(0);
+  const { add, isPlacingOrder } = useCart();
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [categoriesError, setCategoriesError] = useState(false);
@@ -33,32 +34,46 @@ export default function App() {
     return () => controller.abort();
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
+
+useEffect(() => {
+  const controller = new AbortController();
+
+  const timeout = window.setTimeout(async () => {
     setLoading(true);
     setError(null);
 
-    const timeout = window.setTimeout(async () => {
-      try {
-        const data = await getProducts(search, page, categoryId, controller.signal);
-        if (controller.signal.aborted) return;
+    try {
+      const data = await getProducts(
+        search,
+        page,
+        categoryId,
+        controller.signal
+      );
 
-        setProducts(data.results);
-        setTotal(data.count);
-        setHasNextPage(data.next !== null);
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : "Could not load products");
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
+      if (controller.signal.aborted) return;
+
+      setProducts(data.results);
+      setTotal(data.count);
+      setHasNextPage(data.next !== null);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+
+      setError(
+        err instanceof Error ? err.message : "Could not load products"
+      );
+    } finally {
+      if (!controller.signal.aborted) {
+        setLoading(false);
       }
-    }, search ? 350 : 0);
+    }
+  }, search ? 350 : 0);
 
-    return () => {
-      window.clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [search, page, categoryId]);
+  return () => {
+    window.clearTimeout(timeout);
+    controller.abort();
+  };
+}, [search, page, categoryId]);
+
 
   function handleSearchChange(value: string) {
     setSearch(value);
@@ -68,7 +83,6 @@ export default function App() {
   return (
     <div id="home" className="min-h-screen bg-white text-neutral-900">
       <Header
-        cartCount={cartCount}
         search={search}
         onSearchChange={handleSearchChange}
       />
@@ -159,7 +173,8 @@ export default function App() {
                   <ProductCard
                     key={product.id}
                     product={product}
-                    onAdd={() => setCartCount((prev) => prev + 1)}
+                    onAdd={() => add(product)}
+                    addingDisabled={isPlacingOrder}
                   />
                 ))}
               </div>

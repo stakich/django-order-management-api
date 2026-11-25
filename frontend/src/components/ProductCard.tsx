@@ -3,9 +3,10 @@ import type { Product } from "../types/product";
 type ProductCardProps = {
   product: Product;
   onAdd: () => void;
+  addingDisabled: boolean;
 };
 
-export function ProductCard({ product, onAdd }: ProductCardProps) {
+export function ProductCard({ product, onAdd, addingDisabled }: ProductCardProps) {
   const hasImage = Boolean(product.image_url);
 
   return (
@@ -37,7 +38,7 @@ export function ProductCard({ product, onAdd }: ProductCardProps) {
         <button
           type="button"
           onClick={onAdd}
-          disabled={product.stock === 0}
+          disabled={product.stock === 0 || addingDisabled}
           className="w-full bg-amber-400 px-4 py-3 text-sm font-semibold text-neutral-900 transition-colors hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-500"
         >
           {product.stock === 0 ? "Out of stock" : "Add to cart"}

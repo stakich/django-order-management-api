@@ -114,14 +114,15 @@ class StripeWebhookView(APIView):
             return Response({"received": True}, status=200)
 
         session = event["data"]["object"]
-        metadata = session.get("metadata") or {}
+        session_data = session.to_dict()
+        metadata = session_data.get("metadata") or {}
         payment_id = metadata.get("payment_id") if isinstance(metadata, dict) else None
 
         log_context = {
-            "event_id": event.get("id"),
-            "session_id": session.get("id"),
+            "event_id": getattr(event, "id", None),
+            "session_id": session_data.get("id"),
             "payment_id": payment_id,
-            "payment_intent_id": session.get("payment_intent"),
+            "payment_intent_id": session_data.get("payment_intent"),
         }
 
         if not payment_id:
@@ -142,7 +143,7 @@ class StripeWebhookView(APIView):
                 "checkout.session.completed",
                 "checkout.session.async_payment_succeeded",
             ):
-                if session.get("payment_status") == "paid":
+                if session_data.get("payment_status") == "paid":
                     PaymentService.handle_successful_checkout(session)
 
             elif event_type == "checkout.session.expired":
