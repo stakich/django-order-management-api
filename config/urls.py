@@ -9,7 +9,6 @@ from drf_spectacular.views import (
 
 from .health import readiness
 
-
 urlpatterns = [
     path("api/health/ready/", readiness, name="readiness"),
     path("admin/", admin.site.urls),
