@@ -19,7 +19,9 @@ RUN DJANGO_SECRET_KEY=build-only \
     STRIPE_CANCEL_URL=http://localhost/cancel \
     python manage.py collectstatic --noinput
 
-RUN useradd --create-home appuser
+RUN useradd --create-home appuser \
+    && mkdir -p /app/media \
+    && chown appuser:appuser /app/media
 USER appuser
 
 EXPOSE 8000
