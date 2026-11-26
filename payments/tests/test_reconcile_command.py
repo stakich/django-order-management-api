@@ -22,12 +22,13 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
     @patch("payments.management.commands.reconcile_payments.Payment.objects.filter")
     def test_reconciles_eligible_payments(self, mock_filter, mock_reconcile):
         queryset = mock_filter.return_value.order_by.return_value
-        queryset.values_list.return_value.iterator.return_value = iter([10, 11])
+        queryset.values_list.return_value.__getitem__.return_value = [10, 11]
 
         output = StringIO()
 
-        call_command("reconcile_payments", stdout=output)
+        call_command("reconcile_payments", stdout=output, limit=2)
 
+        queryset.values_list.return_value.__getitem__.assert_called_once_with(slice(None, 2))
         self.assertEqual(mock_reconcile.call_count, 2)
         mock_reconcile.assert_any_call(10)
         mock_reconcile.assert_any_call(11)
@@ -42,7 +43,7 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
         from payments.exceptions import PaymentProviderError
 
         queryset = mock_filter.return_value.order_by.return_value
-        queryset.values_list.return_value.iterator.return_value = iter([10, 11])
+        queryset.values_list.return_value.__getitem__.return_value = [10, 11]
 
         mock_reconcile.side_effect = [
             PaymentProviderError("Stripe unavailable"),
@@ -69,7 +70,7 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
     @patch("payments.management.commands.reconcile_payments.Payment.objects.filter")
     def test_skips_unclaimed_payments(self, mock_filter, mock_reconcile):
         queryset = mock_filter.return_value.order_by.return_value
-        queryset.values_list.return_value.iterator.return_value = iter([10, 11])
+        queryset.values_list.return_value.__getitem__.return_value = [10, 11]
 
         mock_filter.return_value.update.side_effect = [0, 1]
 
@@ -88,7 +89,7 @@ class ReconcilePaymentsCommandTests(SimpleTestCase):
     @patch("payments.management.commands.reconcile_payments.Payment.objects.filter")
     def test_claim_error_does_not_stop_batch(self, mock_filter, mock_reconcile):
         queryset = mock_filter.return_value.order_by.return_value
-        queryset.values_list.return_value.iterator.return_value = iter([10, 11])
+        queryset.values_list.return_value.__getitem__.return_value = [10, 11]
 
         mock_filter.return_value.update.side_effect = [
             OperationalError("Database unavailable"),

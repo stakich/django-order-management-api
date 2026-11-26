@@ -1,6 +1,5 @@
 import logging
 from datetime import timedelta
-from itertools import islice
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
@@ -50,14 +49,14 @@ class Command(BaseCommand):
                 updated_at__lte=cutoff,
             )
             .order_by("id")
-            .values_list("id", flat=True)
+            .values_list("id", flat=True)[:limit]
         )
 
         checked = 0
         skipped = 0
         failed = 0
 
-        for payment_id in islice(payment_ids.iterator(), limit):
+        for payment_id in payment_ids:
             try:
                 now = timezone.now()
                 retry_cutoff = now - timedelta(minutes=minutes)

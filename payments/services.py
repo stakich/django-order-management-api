@@ -26,8 +26,8 @@ class PaymentService:
     def calculate_order_total(order):
         total = decimal.Decimal("0.00")
 
-        for item in order.items.all():
-            total += item.quantity * item.unit_price
+        for quantity, unit_price in order.items.values_list("quantity", "unit_price"):
+            total += quantity * unit_price
 
         return total
 
@@ -83,18 +83,19 @@ class PaymentService:
             if order.expires_at is not None and order.expires_at <= timezone.now():
                 raise PaymentNotAllowedError("Order reservation has expired")
 
-            if Payment.objects.filter(order=order, status=Payment.Status.SUCCEEDED).exists():
+            # The database allows only one pending or succeeded payment per order.
+            payment = Payment.objects.filter(
+                order=order,
+                status__in=(Payment.Status.PENDING, Payment.Status.SUCCEEDED),
+            ).first()
+
+            if payment is not None and payment.status == Payment.Status.SUCCEEDED:
                 raise PaymentNotAllowedError("Order already has a successful payment")
 
             total = PaymentService.calculate_order_total(order)
 
             if total <= decimal.Decimal("0.00"):
                 raise PaymentNotAllowedError("Order total must be greater than zero")
-
-            payment = Payment.objects.filter(
-                order=order,
-                status=Payment.Status.PENDING,
-            ).first()
 
             if payment is not None:
                 if payment.amount != total or payment.currency != STRIPE_CURRENCY:
@@ -561,7 +562,7 @@ class PaymentService:
 
     @staticmethod
     def reconcile_known_checkout(payment_id):
-        payment = Payment.objects.select_related("order").get(pk=payment_id)
+        payment = Payment.objects.get(pk=payment_id)
 
         if not payment.stripe_session_id:
             raise PaymentNotAllowedError("Payment does not have a Stripe session")
