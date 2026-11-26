@@ -13,12 +13,18 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 STRIPE_SUCCESS_URL = os.environ["STRIPE_SUCCESS_URL"]
 STRIPE_CANCEL_URL = os.environ["STRIPE_CANCEL_URL"]
+STRIPE_CHECKOUT_KEY_PREFIX = os.getenv("STRIPE_CHECKOUT_KEY_PREFIX", "checkout-payment")
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
 ORDER_EXPIRATION_MINUTES = 30
 
 ALLOWED_HOSTS = [
     host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()
 ]
+
+if os.getenv("DJANGO_TRUST_HTTPS_PROXY", "False").lower() == "true":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 # Application definition
 

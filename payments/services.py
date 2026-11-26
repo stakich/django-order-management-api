@@ -138,7 +138,7 @@ class PaymentService:
                     "order_id": order_id,
                     "payment_id": str(payment.id),
                 },
-                idempotency_key=f"checkout-payment-{payment.id}",
+                idempotency_key=f"{settings.STRIPE_CHECKOUT_KEY_PREFIX}-{payment.id}",
             )
 
         except (
