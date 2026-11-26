@@ -13,13 +13,13 @@
 
 The backend focuses on concurrency-safe inventory, clear service boundaries, access control and recoverable Stripe Checkout workflows. The MayBell-inspired storefront includes a product catalog, JWT-based accounts, a persistent cart, order placement and history, and a redirect to hosted Stripe Checkout. The checkout integration is designed for **Stripe test mode**.
 
-[Features](#features) · [High-level design](#high-level-api-design) · [Low-level design](#low-level-api-design) · [React storefront](#react-storefront) · [Quick start](#quick-start) · [API](#api-documentation) · [Payments](#stripe-payments) · [Testing](#testing-and-ci) · [Limitations](#known-limitations)
+[Features](#features) · [High-level design](#high-level-api-design) · [Low-level design](#low-level-api-design) · [React storefront](#react-storefront) · [Quick start](#quick-start) · [EC2 deployment](#deploy-to-aws-ec2-stripe-sandbox) · [API](#api-documentation) · [Payments](#stripe-payments) · [Testing](#testing-and-ci) · [Limitations](#known-limitations)
 
 ## Features
 
 | Area | Capabilities |
 | --- | --- |
-| **Accounts** | Registration, JWT access and refresh tokens, customer/admin roles, authenticated profile |
+| **Accounts** | Registration, JWT access and refresh tokens, customer/admin roles, authenticated profile and password changes |
 | **Catalog** | Products, disk-backed product images and categories, filtering, search, sorting, pagination, admin-only writes |
 | **Storefront** | React 19 + TypeScript + Vite + Tailwind CSS, responsive MayBell-inspired catalog, product images, category filtering and search |
 | **Frontend authentication** | Register, login, account page, protected routes, logout and JWT access-token refresh |
@@ -221,6 +221,7 @@ config/               Django settings, routing and OpenAPI configuration
 .github/dependabot.yml Dependency update configuration
 Dockerfile            Gunicorn application image (non-root)
 compose.yaml          PostgreSQL, web and scheduler services
+compose.deploy.yaml   EC2 deployment overlay with Nginx and persistent media
 requirements*.txt     Runtime and development dependencies
 pyproject.toml        Ruff and Coverage configuration
 .env.example          Local environment template
@@ -239,7 +240,7 @@ The frontend lives in `frontend/` and is built with React, TypeScript, Vite and 
 Current frontend capabilities:
 
 - Product cards with media uploaded via Django Admin, category names, category filtering, search and pagination.
-- Registration, login, account profile, protected routes and logout.
+- Registration, login, account profile, password changes, protected routes and logout.
 - JWT access-token refresh and a single retry within the same session after an expired access token.
 - A browser-local cart with quantity controls and an estimated total. Django confirms current stock and saves the final unit prices when it creates the order.
 - Order history, details and cancellation. The cart clears after Django creates the order successfully.
@@ -335,13 +336,93 @@ Open the frontend at `http://localhost:5173` and Django API at `http://127.0.0.1
 | --- | --- |
 | `DJANGO_SECRET_KEY` | Django signing key |
 | `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS` | Debugging mode and allowed hosts |
+| `DJANGO_TRUST_HTTPS_PROXY` | Enable HTTPS proxy handling and secure Django cookies behind a trusted reverse proxy. Defaults to `False`. |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | PostgreSQL credentials |
 | `POSTGRES_HOST`, `POSTGRES_PORT` | Database endpoint (`postgres` inside Compose) |
 | `STRIPE_SECRET_KEY` | Stripe test-mode API key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
-| `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL` | Checkout redirect URLs |
+| `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL` | Frontend Checkout return URLs with an `{ORDER_ID}` placeholder |
+| `STRIPE_CHECKOUT_KEY_PREFIX` | Prefix for payment-specific Stripe idempotency keys. Defaults to `checkout-payment`. |
 
-The redirect URLs in `.env.example` are placeholders; corresponding success/cancel pages are not implemented in this backend. Never commit `.env` or real credentials.
+The return URLs in `.env.example` point to the React development server. Use the public HTTPS origin in the EC2 environment. Keep `.env` and real credentials out of Git.
+
+## Deploy to AWS EC2 (Stripe Sandbox)
+
+Host Nginx terminates HTTPS and forwards requests to the Compose Nginx on `127.0.0.1:8082`. The Compose Nginx serves the React build and uploaded product images and forwards API, admin and static requests to Django/Gunicorn. The deployment override keeps Django and PostgreSQL off public host ports. The `postgres_data` and `product_media` volumes hold database files and uploaded images.
+
+### Configure EC2
+
+Install Docker Engine and the Compose plugin, clone the repository, and create a server-local `.env` based on `.env.example`. Set unique Django and PostgreSQL secrets. In the EC2 security group, allow TCP 80 and 443 for the public web proxy and restrict SSH (TCP 22) to your administrative IP.
+
+Replace `YOUR_PUBLIC_HOST` with the hostname or public IP covered by your TLS certificate:
+
+```dotenv
+DJANGO_DEBUG=False
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,YOUR_PUBLIC_HOST
+DJANGO_TRUST_HTTPS_PROXY=True
+STRIPE_SUCCESS_URL=https://YOUR_PUBLIC_HOST/checkout/success?order_id={ORDER_ID}
+STRIPE_CANCEL_URL=https://YOUR_PUBLIC_HOST/checkout/cancel?order_id={ORDER_ID}
+STRIPE_CHECKOUT_KEY_PREFIX=shop-ec2-checkout-payment
+```
+
+Use the same public HTTPS origin for the storefront and both Checkout return URLs. Django substitutes the order ID when it creates a session. Set `STRIPE_SECRET_KEY` to your Stripe Sandbox API key (`sk_test_...`) and `STRIPE_WEBHOOK_SECRET` to the signing secret (`whsec_...`) of the public webhook destination in that Sandbox.
+
+Give each database sharing a Stripe Sandbox its own idempotency key prefix. The service combines the prefix with the payment ID and reuses the resulting key on retries. Keep the prefix stable across deployments. Changing it also changes the key for existing payments, so preserve the original key if you need to recover an unfinished Checkout attempt.
+
+### Configure the HTTPS proxy
+
+In the HTTPS server block of **host Nginx**, configure the upstream:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8082;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+Host Nginx overwrites `X-Forwarded-Proto` with the incoming scheme. The Compose Nginx in `deploy/nginx/deploy.conf` forwards that value to Django. Enable `DJANGO_TRUST_HTTPS_PROXY=True` only when host Nginx controls this header and the Compose listener is restricted to loopback. Django then recognizes the original HTTPS request and sets secure session and CSRF cookies.
+
+Redirect HTTP traffic to HTTPS. Preserve the ACME challenge path if your certificate uses HTTP validation. Configure certificate renewal and reload host Nginx after successful renewals. Validate changes with `sudo nginx -t` before reloading.
+
+### Start and verify the stack
+
+```bash
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml config --quiet
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml up -d --build
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml ps
+curl -fsS https://YOUR_PUBLIC_HOST/api/health/ready/
+```
+
+Expect HTTP 200 and `{"status": "ok"}`. Verify the storefront and `/admin/` over HTTPS. To create an admin account in the EC2 database, run:
+
+```bash
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml \
+  exec web python manage.py createsuperuser
+```
+
+### Verify Stripe Checkout and webhook delivery
+
+Create a **Webhook endpoint** with the **Snapshot** payload style in the same Stripe Sandbox. Set its URL to `https://YOUR_PUBLIC_HOST/api/v1/payments/stripe/webhook/` and subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed` and `checkout.session.expired`.
+
+After changing `.env`, recreate the Django services and restart the Compose Nginx so it resolves the current Django container address:
+
+```bash
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml \
+  up -d --no-build --force-recreate web scheduler &&
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml restart nginx
+```
+
+Create a new test order in the public storefront and finish Checkout with a Stripe test card. Verify the HTTPS return page, the delivery for that order in **Workbench → Webhooks → Event deliveries**, and the `PAID` status under **My orders**.
+
+| Symptom | Check |
+| --- | --- |
+| Django Admin returns `403 CSRF verification failed` | Check both Nginx configurations, Django's HTTPS proxy setting and a fresh admin login over HTTPS. |
+| Checkout redirects to `localhost:5173` | Verify the active Django return URL settings. After correcting them, start a new test Checkout Session. |
+| Stripe rejects a reused idempotency key with different parameters | Check for a prefix collision between databases sharing a Stripe Sandbox. |
+| Stripe shows a paid session but Django still shows `PENDING` | Check delivery of the corresponding `checkout.session.completed` event. For `Invalid Stripe signature`, verify that Django has the signing secret for this destination. After correcting the setting, resend the original event from Workbench. |
+
 
 ## Local monitoring
 
@@ -417,6 +498,7 @@ These paths are relative to `/api/v1/`.
 | `POST` | `auth/login/` | Public, throttled |
 | `POST` | `auth/token/refresh/` | Refresh token |
 | `GET` | `auth/me/` | Authenticated |
+| `POST` | `auth/change-password/` | Authenticated |
 | `GET` | `products/`, `products/{id}/` | Public |
 | `POST`, `PUT`, `PATCH`, `DELETE` | `products/...` | Admin |
 | `GET` | `categories/`, `categories/{id}/` | Public |
@@ -566,13 +648,15 @@ These are explicit scope boundaries, not guarantees of safe operation with live 
 - [x] Persistent shopping cart, frontend order placement and order history
 - [x] Frontend Stripe Checkout integration and return pages
 - [x] Frontend lint, build and unit-test CI job
-- [ ] End-to-end payment verification against Stripe test mode
-- [ ] Production deployment with HTTPS, alerting and a shared rate-limit cache
+- [x] Public AWS EC2 demo deployment with HTTPS
+- [x] End-to-end Checkout and signed webhook verification in Stripe Sandbox
+- [ ] Automated deployment, rollback and external monitoring of the public demo
+- [ ] Shared rate-limit cache for production use
 - [ ] Refunds, persistent incident records and asynchronous webhook processing
 
 ## Project status
 
-**Portfolio MVP implemented.** The storefront covers catalog, authentication, cart, orders and hosted Checkout. End-to-end payment verification with Stripe test mode and production deployment remain open.
+**Portfolio MVP running on AWS EC2.** The React storefront and Django API are served over HTTPS. Stripe Sandbox Checkout and signed webhook delivery were verified on the public demo. Automated deployment, rollback and monitoring of the public demo remain open.
 
 ---
 
