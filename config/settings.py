@@ -124,6 +124,8 @@ REST_FRAMEWORK = {
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "CHECK_REVOKE_TOKEN": True,
+    "TOKEN_REFRESH_SERIALIZER": "accounts.serializers.SessionTokenRefreshSerializer",
 }
 
 
@@ -151,8 +153,25 @@ MEDIA_ROOT = BASE_DIR / "media"
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-MAILERS = {
-    "default": {
-        "BACKEND": "django.core.mail.backends.console.EmailBackend",
-    },
-}
+smtp_host = os.getenv("DJANGO_SMTP_HOST")
+
+if smtp_host:
+    MAILERS = {
+        "default": {
+            "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+            "OPTIONS": {
+                "host": smtp_host,
+                "port": int(os.getenv("DJANGO_SMTP_PORT", "587")),
+                "username": os.getenv("DJANGO_SMTP_USERNAME", ""),
+                "password": os.getenv("DJANGO_SMTP_PASSWORD", ""),
+                "use_tls": True,
+                "timeout": 10,
+            },
+        },
+    }
+else:
+    MAILERS = {
+        "default": {
+            "BACKEND": "django.core.mail.backends.console.EmailBackend",
+        },
+    }

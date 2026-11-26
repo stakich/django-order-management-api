@@ -235,3 +235,19 @@ export function getMe(signal?: AbortSignal): Promise<AuthUser> {
     true
   );
 }
+
+export function changePassword(data: {
+  current_password: string;
+  new_password: string;
+  new_password_confirm: string;
+}): Promise<void> {
+  return request<void>(
+    "/api/v1/auth/change-password/",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    },
+    true,
+  );
+}
