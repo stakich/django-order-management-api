@@ -12,3 +12,9 @@ groups:
         for: 1m
         annotations:
           summary: "Prometheus cannot scrape the Blackbox probe"
+
+      - alert: PublicStorefrontReadinessFailed
+        expr: probe_success{job="public_django_readiness"} == 0
+        for: 1m
+        annotations:
+          summary: "Public storefront readiness check failed for {{ $labels.instance }}"

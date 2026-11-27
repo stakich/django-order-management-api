@@ -8,3 +8,11 @@ modules:
       follow_redirects: false
       headers:
         Host: "127.0.0.1"
+
+  public_django_readiness:
+    prober: http
+    timeout: 4s
+    http:
+      method: GET
+      valid_status_codes: [ 200 ]
+      follow_redirects: false

@@ -26,6 +26,22 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox-exporter:9115
 
+  - job_name: public_django_readiness
+    metrics_path: /probe
+    params:
+      module: [ public_django_readiness ]
+
+    static_configs:
+      - targets:
+          - https://13.53.138.122/api/health/ready/
+    relabel_configs:
+      - source_labels: [ __address__ ]
+        target_label: __param_target
+      - source_labels: [ __param_target ]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
 alerting:
   alertmanagers:
     - static_configs:
