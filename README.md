@@ -222,6 +222,7 @@ config/               Django settings, routing and OpenAPI configuration
 Dockerfile            Gunicorn application image (non-root)
 compose.yaml          PostgreSQL, web and scheduler services
 compose.deploy.yaml   EC2 deployment overlay with Nginx and persistent media
+compose.registry.yaml Release image selection from GHCR
 requirements*.txt     Runtime and development dependencies
 pyproject.toml        Ruff and Coverage configuration
 .env.example          Local environment template
@@ -386,7 +387,7 @@ Host Nginx overwrites `X-Forwarded-Proto` with the incoming scheme. The Compose 
 
 Redirect HTTP traffic to HTTPS. Preserve the ACME challenge path if your certificate uses HTTP validation. Configure certificate renewal and reload host Nginx after successful renewals. Validate changes with `sudo nginx -t` before reloading.
 
-### Start and verify the stack
+### Build and verify the stack from source
 
 ```bash
 sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml config --quiet
@@ -402,16 +403,459 @@ sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml \
   exec web python manage.py createsuperuser
 ```
 
+
+### Deploy a release from GHCR
+
+On pushes to `main`, GitHub Actions publishes a Django image and a storefront image under the same full commit SHA after the backend and frontend checks pass. The Django image runs both `web` and `scheduler` with their existing service commands. The storefront image runs `nginx`. The `compose.registry.yaml` overlay removes the local build configuration and selects the tagged images.
+
+On EC2, run the commands from the repository root after bringing the Compose files and the mounted Nginx configuration up to date. Use the full SHA from a successful **Docker Build & Publish** job on `main`. Before switching releases, record the SHA currently running so it is available for rollback.
+
+```bash
+read -r -p 'Published release SHA: ' release_sha
+
+shop_release() {
+  sudo env RELEASE_SHA="$release_sha" docker compose \
+    -p shop-deploy \
+    -f compose.yaml \
+    -f compose.deploy.yaml \
+    -f compose.registry.yaml \
+    "# Order Management Platform — Django API & React Storefront
+
+[![CI](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml/badge.svg)](https://github.com/stakich/django-order-management-api/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
+![Django](https://img.shields.io/badge/Django-6.1-092E20?logo=django&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-Frontend-3178C6?logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-Frontend-646CFF?logo=vite&logoColor=white)
+
+**An e-commerce portfolio project with a Django REST API and a React + TypeScript storefront.**
+
+The backend focuses on concurrency-safe inventory, clear service boundaries, access control and recoverable Stripe Checkout workflows. The MayBell-inspired storefront includes a product catalog, JWT-based accounts, a persistent cart, order placement and history, and a redirect to hosted Stripe Checkout. The checkout integration is designed for **Stripe test mode**.
+
+[Features](#features) · [High-level design](#high-level-api-design) · [Low-level design](#low-level-api-design) · [React storefront](#react-storefront) · [Quick start](#quick-start) · [EC2 deployment](#deploy-to-aws-ec2-stripe-sandbox) · [API](#api-documentation) · [Payments](#stripe-payments) · [Testing](#testing-and-ci) · [Limitations](#known-limitations)
+
+## Features
+
+| Area | Capabilities |
+| --- | --- |
+| **Accounts** | Registration, JWT access and refresh tokens, customer/admin roles, authenticated profile and password changes |
+| **Catalog** | Products, disk-backed product images and categories, filtering, search, sorting, pagination, admin-only writes |
+| **Storefront** | React 19 + TypeScript + Vite + Tailwind CSS, responsive MayBell-inspired catalog, product images, category filtering and search |
+| **Frontend authentication** | Register, login, account page, protected routes, logout and JWT access-token refresh |
+| **Orders** | Multi-item orders, price snapshots, transactional stock reservation, cancellation and expiration |
+| **Concurrency** | PostgreSQL row-level locking, consistent lock ordering, serialization-failure retries, database constraints |
+| **Payments** | Stripe Checkout, signed webhooks, idempotent transitions, checkout recovery and reconciliation |
+| **Operations** | Docker Compose maintenance scheduler, management commands, read-only Payment Admin |
+| **Security** | Ownership checks, JWT authentication, scoped login/registration/checkout throttling |
+| **Developer experience** | OpenAPI/Swagger UI, Ruff, automated tests, coverage, GitHub Actions, Dependabot |
+
+### Engineering highlights
+
+- **Atomic stock reservation:** order creation and inventory updates execute within a database transaction.
+- **Race-condition protection:** product rows are locked in a stable order; eligible serialization failures are retried.
+- **Payment integrity:** totals are calculated server-side; Stripe signatures, session identity, amount and currency are validated before state transitions.
+- **Idempotent handling:** repeated payment webhook deliveries do not repeat successful order transitions.
+- **Separation of responsibilities:** HTTP behavior lives in API views; business rules live in `OrderService` and `PaymentService`.
+- **Database invariants:** constraints protect order-item quantities, stock and active-payment uniqueness.
+
+## Architecture
+
+### High-Level API Design
+
+The backend is a **modular Django monolith**, not a collection of microservices. A separate React single-page application consumes JSON endpoints under `/api/v1/`; domain services enforce order and payment rules; PostgreSQL is the source of truth. Stripe is an external payment provider. A separate Docker Compose process runs recurring maintenance commands. The frontend is served by Vite during local development.
+
+```mermaid
+flowchart LR
+    Storefront[React + TypeScript SPA] -->|HTTP JSON /api/v1/| Views[DRF views and serializers]
+    Client[API client / Swagger UI] -->|JSON over HTTP| Views
+    Views --> Security[JWT / permissions / throttles]
+    Views --> Catalog[Catalog ORM queries]
+    Views --> Orders[OrderService]
+    Views --> Payments[PaymentService]
+    Catalog --> DB[(PostgreSQL 17)]
+    Orders --> DB
+    Payments --> DB
+    Payments -->|Stripe SDK| Stripe[Stripe Checkout]
+    Stripe -->|Signed events| Webhook[StripeWebhookView]
+    Webhook --> Payments
+    Scheduler[Docker Compose scheduler] --> Commands[Management commands]
+    Commands --> Orders
+    Commands --> Payments
+    Admin[Django Admin: read-only payments] --> DB
+```
+
+**Component responsibilities**
+
+| Component | Responsibility |
+| --- | --- |
+| React storefront (`frontend/`) | Product browsing, category/search UI, account forms and JWT session handling |
+| `accounts`, `products`, `orders`, `payments` API views | Routing, authentication/permissions, request validation and HTTP responses |
+| DRF serializers | Validate incoming data and serialize API responses |
+| `OrderService` | Inventory reservation, order creation, cancellation and safe expiration |
+| `PaymentService` | Checkout creation, Stripe session verification, webhook transitions and recovery |
+| PostgreSQL | Persistent state, row-level locks and database constraints |
+| Stripe | Hosted checkout and payment status events; the server never trusts the browser redirect as proof of payment |
+| `expire_orders`, `reconcile_payments` | Periodic maintenance, invoked by the Compose scheduler or manually |
+
+### Low-Level API Design
+
+#### Endpoint contracts
+
+All application endpoints below use the `/api/v1/` prefix and JSON request/response bodies unless noted otherwise. JWT-protected endpoints use `Authorization: Bearer <access_token>`. See [the endpoint overview](#endpoint-overview) and [Swagger UI](#api-documentation) for the complete API surface.
+
+| Operation | HTTP endpoint | Input | Success response | Access |
+| --- | --- | --- | --- | --- |
+| Register | `POST auth/register/` | `username`, `email`, `password`, `password_confirm` | `201` user fields | Public; `3/hour` throttle |
+| Login | `POST auth/login/` | `username`, `password` | `200` access/refresh JWTs | Public; `5/min` throttle |
+| Refresh JWT | `POST auth/token/refresh/` | `refresh` | `200` new access JWT | Holder of valid refresh token |
+| Current account | `GET auth/me/` | Bearer access JWT | `200` `id`, `username`, `email` | Authenticated |
+| Browse categories | `GET categories/` | No body | `200` category list | Public |
+| Browse products | `GET products/` | Optional `search`, `category`, `is_active`, `ordering`, `page`, `page_size` | `200` paginated products | Public; only active products for non-admins |
+| Create order | `POST orders/` | `items: [{product, quantity}]` | `201` order with item snapshots | Authenticated |
+| Read order | `GET orders/{id}/` | URL ID | `200` order with items | Owner or API admin |
+| Cancel order | `POST orders/{id}/cancel/` | URL ID; no body required | `200` updated order | Owner or API admin; eligible orders only |
+| Start checkout | `POST orders/{id}/checkout/` | URL ID; no body required | `200` `checkout_url` | Order owner; `10/min` throttle |
+| Stripe webhook | `POST payments/stripe/webhook/` | Raw Stripe event + `Stripe-Signature` header | `200` `{ "received": true }` | Valid Stripe signature; no JWT |
+
+Product list pagination defaults to **10 items per page**; `page_size` can request up to **100**. Order detail/list access is restricted to the owner or an API admin. Product/category writes require `UserProfile.Role.ADMIN` (separate from Django staff/superuser permissions).
+
+#### Request / response examples
+
+**Create an order:** the client sends product IDs and quantities only. The server reads product prices and saves per-order `unit_price` snapshots; it does **not** accept client-provided prices.
+
+```http
+POST /api/v1/orders/
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "items": [
+    {"product": 1, "quantity": 2},
+    {"product": 2, "quantity": 1}
+  ]
+}
+```
+
+On success (`201 Created`), the response uses `OrderSerializer` and includes the generated `id`, `user`, `status`, `expires_at`, timestamps, and nested `items` with saved `unit_price` values. An order starts as `PENDING`. Its default reservation expiration is **30 minutes** after creation; an expired order is not automatically cancelled until the maintenance command processes it.
+
+**Create or reuse checkout:** the request has no JSON body. A successful call returns a Stripe-hosted URL; the client must not mark the order as paid based on this response or on the success redirect.
+
+```http
+POST /api/v1/orders/42/checkout/
+Authorization: Bearer <access_token>
+```
+
+```json
+{
+  "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_example"
+}
+```
+
+The URL and IDs above are illustrative, not live Stripe credentials. Repeated checkout requests may reuse a verified open Checkout Session rather than creating another one.
+
+**Stripe webhook:** Stripe sends the raw event body and the `Stripe-Signature` header. `StripeWebhookView` verifies the signature and handles supported `checkout.session.*` events; successful receipt is acknowledged with `{"received": true}`. Business failures requiring investigation are logged; the HTTP acknowledgement alone does not imply that an order became paid.
+
+#### Data model and invariants
+
+```mermaid
+erDiagram
+    USER ||--o{ ORDER : places
+    CATEGORY ||--o{ PRODUCT : contains
+    ORDER ||--|{ ORDER_ITEM : contains
+    PRODUCT ||--o{ ORDER_ITEM : referenced_by
+    ORDER ||--o{ PAYMENT : has_attempts
+```
+
+| Entity | Important fields / guarantees |
+| --- | --- |
+| `Order` | `user_id`, `status`, `expires_at`; statuses: `PENDING`, `PAID`, `CANCELLED` |
+| `OrderItem` | `order_id`, `product_id`, `quantity >= 1`, `unit_price >= 0`; unique `(order, product)`; order-time price snapshot |
+| `Product` | `price`, `stock >= 0`, `is_active`, `category_id`, optional `image` path on disk; unique `sku` |
+| `Payment` | `order_id`, `amount`, `currency`, `status`, `checkout_status`, `stripe_session_id`, `checkout_claimed_at`, `last_reconciled_at`; unique non-null Stripe session ID |
+
+A conditional database constraint allows at most **one payment in `PENDING` or `SUCCEEDED` status per order**; `FAILED` attempts remain available as history. Payment processing uses two independent state dimensions:
+
+- `Payment.status`: `PENDING` → `SUCCEEDED` or `FAILED`.
+- `Payment.checkout_status`: `NOT_STARTED`, `CREATING`, `READY`, `EXPIRED` (checkout-session lifecycle, not proof of payment).
+
+**Order state machine**
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: Create order / reserve stock
+    PENDING --> PAID: Verified successful Stripe payment
+    PENDING --> CANCELLED: Eligible cancellation or expiration
+    PAID --> [*]
+    CANCELLED --> [*]
+```
+
+Cancellation or expiration restores stock only when payment-state checks establish that doing so is safe.
+
+#### Checkout and webhook sequence
+
+```mermaid
+sequenceDiagram
+    participant C as API client
+    participant V as CheckoutView
+    participant P as PaymentService
+    participant DB as PostgreSQL
+    participant S as Stripe
+    participant W as StripeWebhookView
+    C->>V: POST /orders/{id}/checkout/
+    V->>P: create_checkout_session(user, order_id)
+    P->>DB: Validate order, claim checkout in transaction
+    P->>S: Create or reuse Checkout Session
+    S-->>P: Session ID, checkout URL
+    P->>DB: Persist session ID, checkout state
+    P-->>V: checkout URL
+    V-->>C: 200 {checkout_url}
+    S->>W: Signed checkout.session event
+    W->>W: Verify Stripe-Signature
+    W->>P: Handle supported event
+    P->>DB: Validate session, update states under row locks
+    W-->>S: 200 {received: true}
+```
+
+The diagram illustrates the successful checkout path. Real execution can reuse an existing session, reject an ineligible order or defer resolution of a Stripe operation with an uncertain outcome.
+
+#### Validation, concurrency and failure handling
+
+- **Order creation:** the input serializer requires a nonempty item list and positive integer product IDs/quantities. `OrderService` rejects duplicate products, inactive products and insufficient stock. Product rows are locked with `select_for_update()` in ascending ID order; order creation and stock deduction happen in one `transaction.atomic()` block. Eligible PostgreSQL serialization failures are retried up to three attempts at the view boundary.
+- **Checkout:** only the order owner can pay a pending, unexpired order. The amount is calculated from saved `OrderItem.unit_price` values, then sent to Stripe in integer cents. Checkout creation uses the Stripe idempotency key `checkout-payment-{payment.id}` and a `CREATING` claim to limit duplicate creation.
+- **Webhooks:** verify Stripe's signature before processing; validate session identity, metadata, amount, currency and state. Payment updates lock the `Order` row before the `Payment` row. A repeated successful event must not apply the payment/order transition twice. `StripeWebhookView` is intentionally not protected by JWT; it uses Stripe signature verification instead.
+- **Maintenance:** `expire_orders` safely cancels eligible expired orders; `reconcile_payments --minutes 15 --limit 100` rechecks old pending payments with known sessions, using `last_reconciled_at` to claim work. The Compose scheduler invokes these sequentially.
+
+Typical HTTP responses include `400` for invalid requests or disallowed transitions, `401` for missing authentication, `403` for insufficient API permissions, `404` for inaccessible orders, `429` for throttled requests and `503` for a Stripe provider failure. Actual errors depend on the endpoint and state; use the generated OpenAPI schema and tests as the contract source of truth.
+
+### Repository structure
+
+```text
+frontend/             React + TypeScript + Vite + Tailwind storefront
+accounts/             Registration, JWT, roles and permissions
+products/             Product and category APIs
+orders/               Order APIs, inventory service and expiration command
+payments/             Stripe Checkout, webhook handlers and reconciliation command
+config/               Django settings, routing and OpenAPI configuration
+.github/workflows/    CI tests and Docker image publishing
+.github/dependabot.yml Dependency update configuration
+Dockerfile            Gunicorn application image (non-root)
+compose.yaml          PostgreSQL, web and scheduler services
+compose.deploy.yaml   EC2 deployment overlay with Nginx and persistent media
+compose.registry.yaml Release image selection from GHCR
+requirements*.txt     Runtime and development dependencies
+pyproject.toml        Ruff and Coverage configuration
+.env.example          Local environment template
+```
+
+## Tech stack
+
+Frontend: React 19 · TypeScript · React Router · Vite · Tailwind CSS 3
+
+Backend: Python 3.14 · Django 6.1 · Django REST Framework · Simple JWT · PostgreSQL 17 · psycopg · Stripe Checkout · Gunicorn · WhiteNoise · Docker Compose · Ruff · Coverage · GitHub Actions · GHCR
+
+## React storefront
+
+The frontend lives in `frontend/` and is built with React, TypeScript, Vite and Tailwind CSS. The responsive layout is based on the MayBell / Tailwind E-commerce design. It consumes the existing Django API, rather than rendering Django templates.
+
+Current frontend capabilities:
+
+- Product cards with media uploaded via Django Admin, category names, category filtering, search and pagination.
+- Registration, login, account profile, password changes, protected routes and logout.
+- JWT access-token refresh and a single retry within the same session after an expired access token.
+- A browser-local cart with quantity controls and an estimated total. Django confirms current stock and saves the final unit prices when it creates the order.
+- Order history, details and cancellation. The cart clears after Django creates the order successfully.
+- Hosted Stripe Checkout for pending, unexpired orders with a positive total. The return pages show the status from Django.
+
+### Frontend routes and authentication
+
+| Route | Purpose |
+| --- | --- |
+| `/` | Product catalog / home |
+| `/register` | Customer registration |
+| `/login` | Login |
+| `/account` | Authenticated profile |
+| `/cart` | Cart, quantity changes and authenticated order placement |
+| `/orders` | Authenticated order history |
+| `/orders/:orderId` | Order details, cancellation and Checkout |
+| `/checkout/success`, `/checkout/cancel` | Authenticated return pages with payment status |
+
+Login uses `POST /api/v1/auth/login/`; authenticated requests use a Bearer access token. On access-token expiry, the frontend can call `POST /api/v1/auth/token/refresh/` and retry once. User details come from `GET /api/v1/auth/me/`. The current prototype stores JWT tokens in browser `sessionStorage` and Logout clears them locally. **This is not a production-grade browser authentication design:** storage is readable by page JavaScript and logout does not revoke already-issued tokens server-side.
+
+## Quick start
+
+**Requirements:** Docker and Docker Compose, or Python 3.14 and PostgreSQL 17 for the backend. Use Node.js 24 and npm for the React frontend.
+
+### Docker (recommended)
+
+```bash
+git clone https://github.com/stakich/django-order-management-api.git
+cd django-order-management-api
+cp .env.example .env
+```
+
+Set your own PostgreSQL password, Django secret and **Stripe test-mode** credentials in `.env`. You can generate a Django secret with:
+
+```bash
+python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+```
+
+Start PostgreSQL, the web API and the maintenance scheduler:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+The API is available at `http://localhost:8000`. The `web` service applies migrations before starting Gunicorn; the `scheduler` service executes periodic maintenance commands. **This Compose setup runs the backend only; start `frontend/` separately with Vite.** Inspect logs with:
+
+```bash
+docker compose logs -f web
+docker compose logs -f scheduler
+```
+
+Create a Django admin account:
+
+```bash
+docker compose exec web python manage.py createsuperuser
+```
+
+Visit `http://localhost:8000/admin/`. Payment records are available for viewing but cannot be added, edited or deleted through Django Admin.
+
+> Django `is_superuser` / `is_staff` is separate from this API's `UserProfile.Role.ADMIN`. Grant the profile role separately for API administrator permissions.
+
+### Local Python development
+
+```bash
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env
+# Set POSTGRES_HOST=127.0.0.1 in .env
+docker compose up -d postgres
+python manage.py migrate
+python manage.py runserver
+```
+
+When running Django outside Compose, maintenance commands must be invoked manually or scheduled separately.
+
+### Local React development
+
+Start PostgreSQL and Django as shown above. In a second terminal:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Open the frontend at `http://localhost:5173` and Django API at `http://127.0.0.1:8000`. During development, `vite.config.ts` proxies `/api` and `/media` to Django. To create sample products and upload images, visit `http://127.0.0.1:8000/admin/`; Django serves uploaded media directly only in development when `DJANGO_DEBUG=True`.
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `DJANGO_SECRET_KEY` | Django signing key |
+| `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS` | Debugging mode and allowed hosts |
+| `DJANGO_TRUST_HTTPS_PROXY` | Enable HTTPS proxy handling and secure Django cookies behind a trusted reverse proxy. Defaults to `False`. |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | PostgreSQL credentials |
+| `POSTGRES_HOST`, `POSTGRES_PORT` | Database endpoint (`postgres` inside Compose) |
+| `STRIPE_SECRET_KEY` | Stripe test-mode API key |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
+| `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL` | Frontend Checkout return URLs with an `{ORDER_ID}` placeholder |
+| `STRIPE_CHECKOUT_KEY_PREFIX` | Prefix for payment-specific Stripe idempotency keys. Defaults to `checkout-payment`. |
+
+The return URLs in `.env.example` point to the React development server. Use the public HTTPS origin in the EC2 environment. Keep `.env` and real credentials out of Git.
+
+## Deploy to AWS EC2 (Stripe Sandbox)
+
+Host Nginx terminates HTTPS and forwards requests to the Compose Nginx on `127.0.0.1:8082`. The Compose Nginx serves the React build and uploaded product images and forwards API, admin and static requests to Django/Gunicorn. The deployment override keeps Django and PostgreSQL off public host ports. The `postgres_data` and `product_media` volumes hold database files and uploaded images.
+
+### Configure EC2
+
+Install Docker Engine and the Compose plugin, clone the repository, and create a server-local `.env` based on `.env.example`. Set unique Django and PostgreSQL secrets. In the EC2 security group, allow TCP 80 and 443 for the public web proxy and restrict SSH (TCP 22) to your administrative IP.
+
+Replace `YOUR_PUBLIC_HOST` with the hostname or public IP covered by your TLS certificate:
+
+```dotenv
+DJANGO_DEBUG=False
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,YOUR_PUBLIC_HOST
+DJANGO_TRUST_HTTPS_PROXY=True
+STRIPE_SUCCESS_URL=https://YOUR_PUBLIC_HOST/checkout/success?order_id={ORDER_ID}
+STRIPE_CANCEL_URL=https://YOUR_PUBLIC_HOST/checkout/cancel?order_id={ORDER_ID}
+STRIPE_CHECKOUT_KEY_PREFIX=shop-ec2-checkout-payment
+```
+
+Use the same public HTTPS origin for the storefront and both Checkout return URLs. Django substitutes the order ID when it creates a session. Set `STRIPE_SECRET_KEY` to your Stripe Sandbox API key (`sk_test_...`) and `STRIPE_WEBHOOK_SECRET` to the signing secret (`whsec_...`) of the public webhook destination in that Sandbox.
+
+Give each database sharing a Stripe Sandbox its own idempotency key prefix. The service combines the prefix with the payment ID and reuses the resulting key on retries. Keep the prefix stable across deployments. Changing it also changes the key for existing payments, so preserve the original key if you need to recover an unfinished Checkout attempt.
+
+### Configure the HTTPS proxy
+
+In the HTTPS server block of **host Nginx**, configure the upstream:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8082;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+Host Nginx overwrites `X-Forwarded-Proto` with the incoming scheme. The Compose Nginx in `deploy/nginx/deploy.conf` forwards that value to Django. Enable `DJANGO_TRUST_HTTPS_PROXY=True` only when host Nginx controls this header and the Compose listener is restricted to loopback. Django then recognizes the original HTTPS request and sets secure session and CSRF cookies.
+
+Redirect HTTP traffic to HTTPS. Preserve the ACME challenge path if your certificate uses HTTP validation. Configure certificate renewal and reload host Nginx after successful renewals. Validate changes with `sudo nginx -t` before reloading.
+
+### Build and verify the stack from source
+
+```bash
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml config --quiet
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml up -d --build
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml ps
+curl -fsS https://YOUR_PUBLIC_HOST/api/health/ready/
+```
+
+Expect HTTP 200 and `{"status": "ok"}`. Verify the storefront and `/admin/` over HTTPS. To create an admin account in the EC2 database, run:
+
+```bash
+sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml \
+  exec web python manage.py createsuperuser
+```
+"
+}
+
+shop_release config --images &&
+shop_release pull web scheduler nginx &&
+shop_release up -d --no-build --pull never &&
+shop_release ps
+```
+
+The project name `shop-deploy` selects the existing database and media volumes. `config --images` prints the references selected by Compose, `pull` downloads the release, and `up` starts it from the downloaded images. In `ps`, check that `web`, `scheduler` and `nginx` all use the selected SHA.
+
+```bash
+curl -fsS -w '\nHTTP %{http_code}\n' \
+  https://YOUR_PUBLIC_HOST/api/health/ready/
+```
+
+Expect HTTP 200 and `{"status": "ok"}`. Open the storefront and load a product image to check the React build and shared media mount.
+
+### Roll back a GHCR release
+
+For a drill, use two published releases that share the same database schema, Compose files and mounted Nginx configuration. Set `release_sha` to the recorded previous SHA and repeat the `config --images`, `pull`, `up`, `ps` and readiness checks above. For a complete drill, deploy the newer SHA again and repeat the smoke checks.
+
+An image rollback switches application code while keeping the database and media volumes. The Django `web` service runs migrations at startup. Review migration compatibility before rolling back across a schema change and plan any database recovery separately.
+
 ### Verify Stripe Checkout and webhook delivery
 
 Create a **Webhook endpoint** with the **Snapshot** payload style in the same Stripe Sandbox. Set its URL to `https://YOUR_PUBLIC_HOST/api/v1/payments/stripe/webhook/` and subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed` and `checkout.session.expired`.
 
-After changing `.env`, recreate the Django services and restart the Compose Nginx so it resolves the current Django container address:
+After changing `.env` on a GHCR deployment, use the `shop_release` function with the currently deployed SHA to recreate the Django services and refresh the Nginx upstream:
 
 ```bash
-sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml \
-  up -d --no-build --force-recreate web scheduler &&
-sudo docker compose -p shop-deploy -f compose.yaml -f compose.deploy.yaml restart nginx
+shop_release up -d --no-build --pull never --force-recreate web scheduler &&
+shop_release restart nginx
 ```
 
 Create a new test order in the public storefront and finish Checkout with a Stripe test card. Verify the HTTPS return page, the delivery for that order in **Workbench → Webhooks → Event deliveries**, and the `PAID` status under **My orders**.
@@ -603,7 +1047,7 @@ Local Chromium checks with Django and PostgreSQL verified cart persistence, stoc
 docker pull ghcr.io/stakich/django-order-management-api:latest
 ```
 
-The registry image is not a live deployment. For reproducible deployment, prefer an immutable commit-SHA image tag.
+Use the same commit SHA for both images when [deploying the public demo](#deploy-a-release-from-ghcr).
 
 ## Security and deployment notes
 
@@ -650,7 +1094,8 @@ These are explicit scope boundaries, not guarantees of safe operation with live 
 - [x] Frontend lint, build and unit-test CI job
 - [x] Public AWS EC2 demo deployment with HTTPS
 - [x] End-to-end Checkout and signed webhook verification in Stripe Sandbox
-- [ ] Automated deployment, rollback and external monitoring of the public demo
+- [x] Manual EC2 deployment from matching Django and storefront images in GHCR
+- [ ] Automated deployment, rollback drill and external monitoring of the public demo
 - [ ] Shared rate-limit cache for production use
 - [ ] Refunds, persistent incident records and asynchronous webhook processing
 
