@@ -1,0 +1,11 @@
+services:
+  web:
+    build: !reset null
+    image: ghcr.io/stakich/django-order-management-api:${RELEASE_SHA:?Set RELEASE_SHA}
+
+  scheduler:
+    image: ghcr.io/stakich/django-order-management-api:${RELEASE_SHA:?Set RELEASE_SHA}
+
+  nginx:
+    build: !reset null
+    image: ghcr.io/stakich/django-order-management-api-storefront:${RELEASE_SHA:?Set RELEASE_SHA}
